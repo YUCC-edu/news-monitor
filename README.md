@@ -31,7 +31,9 @@ pnpm --filter @news/db migrate
 
 # 3. 准备 .env（首次）
 Copy-Item .env.example .env
-# 生成密码哈希并把 stdout 填进 .env 的 AUTH_PASS_HASH
+# 生成密码哈希并把 stdout 整段填进 .env 的 AUTH_PASS_HASH
+# 注意：脚本已自动把 bcrypt 哈希里的 $ 转义成 \$，直接粘贴即可，
+#       否则 Next.js 会把 $2a$10$ 当成变量引用展掉。
 node apps/web/scripts/hash-password.mjs '你的密码'
 # 同时填一个随机的 AUTH_SECRET（≥ 32 位随机字符）
 
