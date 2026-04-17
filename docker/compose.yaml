@@ -39,4 +39,23 @@ services:
     depends_on:
       - redis
 
-  # web 与 worker 在 Task 0.6 / M1 加入；当前先跑底座三件套即可。
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web.Dockerfile
+    container_name: news-web
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://news:news@postgres:5432/news
+      REDIS_URL: redis://redis:6379
+      RSSHUB_BASE: http://rsshub:1200
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # worker 在 M1 加入
