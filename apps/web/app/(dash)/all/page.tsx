@@ -1,4 +1,5 @@
-import { Placeholder } from "@/components/placeholder";
+import { redirect } from "next/navigation";
+
 export default function Page() {
-  return <Placeholder title="全部 AI 动态" hint="将在 M1 填充" />;
+  redirect("/?feed=all");
 }

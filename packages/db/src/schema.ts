@@ -41,6 +41,9 @@ export const sources = pgTable(
     lastOkAt: timestamp("last_ok_at", { withTimezone: true }),
     lastError: text("last_error"),
     failCount: integer("fail_count").notNull().default(0),
+    dedupKey: text("dedup_key"),
+    initialFetchDays: integer("initial_fetch_days"),
+    maxItemAgeDays: integer("max_item_age_days"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -86,6 +89,8 @@ export const items = pgTable(
 export const clusters = pgTable("clusters", {
   id: uuid("id").primaryKey().defaultRandom(),
   topic: text("topic"),
+  /** Running-average embedding for nearest-cluster retrieval (optional until backfilled). */
+  centroidEmbedding: vector1024("centroid_embedding"),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -147,6 +152,23 @@ export const controlledTags = pgTable("controlled_tags", {
   displayZh: text("display_zh"),
   weight: integer("weight").notNull().default(0),
 });
+
+export const favorites = pgTable(
+  "favorites",
+  {
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.itemId] }),
+    createdIdx: index("favorites_created_idx").on(t.createdAt),
+  }),
+);
 
 export type Source = typeof sources.$inferSelect;
 export type NewSource = typeof sources.$inferInsert;

@@ -2,7 +2,7 @@
 
 - **创建日期**：2026-04-17
 - **文档作者**：项目方与 AI 协作
-- **状态**：Draft，待用户最终审阅
+- **状态**：Living doc（与实现同步演进；**里程碑与交付事实**以 [`docs/STATUS.md`](../STATUS.md) 为准；**与代码不一致处**见 [`docs/DESIGN-DELTA.md`](../DESIGN-DELTA.md)）
 - **目标**：复刻「AI HOT」类资讯监控大屏的核心能力，第一版聚焦自用单机部署。
 
 ---
@@ -11,7 +11,7 @@
 
 ### 1.1 目标
 - 监控多个信源的新内容，5–10 分钟内出现在大屏上。
-- 第一版支持平台：**RSS / Atom**、**Hacker News**、**X (Twitter，经自建 RSSHub)**。
+- 第一版支持平台：**RSS / Atom**、**Hacker News**、**X (Twitter，经自建 RSSHub)**、**公众号（经自建 WeWe-RSS，Atom 订阅）**（实现见 README「订阅公众号」与 `creators` 运营页）。
 - 用户可在 UI 中：
   - 添加 / 启停 / 删除 信源；
   - 添加 X 账号（按 handle）；
@@ -21,7 +21,8 @@
 
 ### 1.2 非目标（第一版不做）
 - 多用户 / 多租户 / RBAC（自用，单账号即可）。
-- 公众号 / 小红书 / 抖音 / B 站 connector（后续迭代）。
+- **微信订阅号/服务号的官方开放平台接入**、以及 **小红书 / 抖音 / B 站** 等平台的原生 connector（后续若做再单独立项）。
+- **说明**：第一版已通过 **WeWe-RSS** 将公众号内容转为 **Atom**，由现有 RSS 流水线抓取（`wechat-wewe` 信源种类），不属于上一条「官方平台 connector」。
 - AI 摘要、热度评分（已与用户确认本期不做）。
 - 移动端原生 App（响应式 Web 即可）。
 - 计费 / 公开访问。
@@ -36,7 +37,7 @@
 | 进程拆分 | **web**（Next.js）+ **worker**（独立 Node 进程） | 抓取/AI 不阻塞 UI，连接器独立演进 |
 | 数据库 | PostgreSQL + pgvector | JSONB 存原始 payload；向量做聚类，免引入 ES/Milvus |
 | 队列 / 实时通道 | Redis（BullMQ + Pub/Sub） | 同时承担调度与 SSE 跨进程广播 |
-| 前端 | Next.js App Router + ECharts | 全栈一套技术，自用够用 |
+| 前端 | Next.js App Router + **轻量图表（CSS）**；**ECharts 为可选增强**（当前仓库统计页未引入 `echarts`，见 `DESIGN-DELTA`） | 自用够用，避免过早绑定可视化栈 |
 | X 接入 | **自建 RSSHub** 容器 | 无须官方付费 API，统一作为 RSS 源处理 |
 | LLM 接入 | **OpenAI 兼容协议**（默认） | 一份代码兼容 OpenAI / DeepSeek / 通义千问等 |
 | 通知 | Web Notifications API（关键词命中） | 无需额外推送服务 |
@@ -49,7 +50,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                       Browser（大屏 UI）                     │
-│      Next.js App Router + SSE 实时推送 + ECharts 仪表        │
+│      Next.js App Router + SSE 实时推送 + 统计/轻量图表        │
 └──────────────▲──────────────────────────────▲───────────────┘
                │ HTTP/SSE                    │ HTTP
 ┌──────────────┴───────────┐        ┌────────┴────────────────┐

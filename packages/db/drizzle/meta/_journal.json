@@ -8,6 +8,34 @@
       "when": 1776404493471,
       "tag": "0000_fair_vivisector",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776440990157,
+      "tag": "0001_chief_ares",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776450000000,
+      "tag": "0002_dedup_window_cols",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776450000001,
+      "tag": "0003_dedup_unique_notnull",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776500000000,
+      "tag": "0004_clusters_centroid",
+      "breakpoints": true
     }
   ]
 }

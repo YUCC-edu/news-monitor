@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: news
       POSTGRES_DB: news
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - ./.data/pg:/var/lib/postgresql/data
     healthcheck:
@@ -36,8 +36,20 @@ services:
       - "1200:1200"
     environment:
       NODE_ENV: production
+      TWITTER_AUTH_TOKEN: ${TWITTER_AUTH_TOKEN:-}
     depends_on:
       - redis
+
+  wewe-rss:
+    image: cooderl/wewe-rss-sqlite:latest
+    container_name: news-wewe-rss
+    ports:
+      - "4000:4000"
+    environment:
+      AUTH_CODE: ${WEWE_RSS_AUTH_CODE:-change-me}
+      DATABASE_URL: "file:/app/data/db.sqlite"
+    volumes:
+      - ./.data/wewe:/app/data
 
   web:
     build:

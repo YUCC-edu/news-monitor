@@ -1,13 +1,10 @@
-export { default } from "next-auth/middleware";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export function middleware(_request: NextRequest) {
+  return NextResponse.next();
+}
 
 export const config = {
-  matcher: [
-    /*
-     * 保护除以下之外的所有路径：
-     * - /login
-     * - /api/auth/*（NextAuth 自身接口）
-     * - 静态资源 (_next/*, favicon, public)
-     */
-    "/((?!login|api/auth|_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

@@ -1,5 +1,11 @@
 # news-monitor Implementation Plan
 
+> **进度与交付状态（必读）**  
+> - **单一事实来源**：根目录 [`README.md`](../../README.md)「当前状态」+ [`docs/STATUS.md`](../STATUS.md) 里程碑表。  
+> - 本文件为 **历史分步稿**，其中大量 `- [ ]` **不代表**当前仓库未实现；请勿仅凭未勾选判断项目进度。  
+> - 设计目标与代码差异见 [`docs/DESIGN-DELTA.md`](../DESIGN-DELTA.md)。  
+> - 若需恢复 checkbox 跟踪，建议仅维护 **当前里程碑之后** 的新增任务段，避免全量维护成本。
+
 > **For agentic workers:** Implement task-by-task using checkbox (`- [ ]`) tracking. After each task: run the listed verification command, then commit. Do NOT skip ahead.
 
 **Goal:** 自用单机的多源资讯监控大屏：5–10 分钟内把 RSS / Hacker News / X (RSSHub) 的新内容采集、翻译、打标签、聚类后呈现到 Web 大屏，并对关键词命中弹桌面通知。
@@ -833,16 +839,12 @@ git tag m1
 - Modify: `packages/db/src/schema.ts` 已含 `clusters` 表 / `embedding`；这里只补 SQL 索引：`ivfflat` + `lists=100`
 
 - [ ] **Step 1：`embed()` 走 OpenAI 兼容 `embeddings`**；维度对齐 `vector(1024)`（用 `text-embedding-3-small` 截断或选合适模型）。
-- [ ] **Step 2：`pipeline/cluster.ts`**：
-  ```sql
-  SELECT cluster_id, 1 - (embedding <=> $1) AS sim
-  FROM item_enrichments
-  WHERE cluster_id IS NOT NULL
-    AND enriched_at > now() - interval '72 hours'
-  ORDER BY embedding <=> $1 ASC
-  LIMIT 1;
-  ```
-  阈值默认 0.86：>= 阈值 → 复用；否则新建 cluster 并入 `name-cluster` 队列。
+- [ ] **Step 2：`pipeline/cluster.ts`（实现已演进，以下 SQL 为早期草案，勿照抄）**  
+  **以代码为准**：
+  - 候选簇检索：[`packages/db/src/ops.ts`](../../packages/db/src/ops.ts) 中 `findTopClusterCandidatesByCentroid`、`findTopClusterCandidatesByMemberEmbedding`（按簇聚合「簇内最佳成员」相似度，再取 Top-K；成员检索带可配置时间窗）。
+  - 合并决策与阈值：[`apps/worker/src/pipeline/cluster.ts`](../../apps/worker/src/pipeline/cluster.ts)（默认相似度阈值 **0.86**，可通过环境变量 **`CLUSTER_SIM_THRESHOLD`** 覆盖；成员窗口 **`CLUSTER_EMBEDDING_NEIGHBOR_HOURS`**，默认 72；Top-K：**`CLUSTER_EMBEDDING_MEMBER_TOP_K`**、**`CLUSTER_CENTROID_TOP_K`**）。
+  - 簇质心：`clusters.centroid_embedding` 由 enrich 后 [`updateClusterCentroidAfterItemEnriched`](../../packages/db/src/ops.ts) 维护；近邻优先与质心比对（无质心时仍可依成员检索命中）。
+  - 旧版「单条全局 LIMIT 1 + 固定 72h」已不再作为唯一策略；详见 [`docs/DESIGN-DELTA.md`](../DESIGN-DELTA.md) 索引与性能项。
 - [ ] **Step 3：`name-cluster.ts`** —— 拿 cluster 里最近 5 条标题让 LLM 起一个 ≤ 16 字的 topic。
 - [ ] **Step 4：UI 卡片** —— 显示「另有 N 个源也报道了此事件」（join `clusters.item_count - 1`）。
 - [ ] **Step 5：手测** —— 找一个被多家媒体同时报道的事件（如最近一次 OpenAI 公告），观察是否聚到同一 cluster。
