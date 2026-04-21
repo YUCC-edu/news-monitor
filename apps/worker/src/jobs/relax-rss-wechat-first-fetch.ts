@@ -9,6 +9,8 @@ export type RelaxFilterParams = {
   firstFetchMaxAgeDaysDefault: number;
   items: NormalizedItem[];
   now: Date;
+  maxPublishedAtWatermark?: Date | null;
+  incrementalSlackMs?: number;
 };
 
 /**

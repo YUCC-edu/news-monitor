@@ -10,6 +10,8 @@ const Schema = z.object({
   LLM_API_KEY: z.string().optional().default(""),
   LLM_CHAT_MODEL: z.string().default("gpt-4o-mini"),
   LLM_EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).optional().default("info"),
+  LOG_MODULES: z.string().optional().default(""),
 });
 
 export type Env = z.infer<typeof Schema>;

@@ -17,6 +17,7 @@
     "@news/connectors-x-rsshub": "workspace:*",
     "@news/connectors-wechat-wewe": "workspace:*",
     "@news/db": "workspace:*",
+    "@news/shared": "workspace:*",
     "bullmq": "^5.58.0",
     "ioredis": "^5.8.1"
   },

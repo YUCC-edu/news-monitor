@@ -3,6 +3,9 @@ import Redis from "ioredis";
 import { Queue } from "bullmq";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createLogger } from "@news/shared";
+
+const log = createLogger("api:system");
 
 function maskUrl(raw: string | undefined) {
   if (!raw) return null;
@@ -88,6 +91,7 @@ async function listBackups() {
 }
 
 export async function GET() {
+  const t0 = Date.now();
   const redisUrl = process.env.REDIS_URL ?? "";
   const [redisOk, rsshubOk, weweOk] = await Promise.all([
     redisUrl ? pingRedis(redisUrl) : Promise.resolve(false),
@@ -104,7 +108,7 @@ export async function GET() {
 
   const backups = await listBackups();
 
-  return NextResponse.json({
+  const payload = {
     env: {
       database: {
         url: maskUrl(process.env.DATABASE_URL),
@@ -143,5 +147,13 @@ export async function GET() {
       platform: process.platform,
       uptimeSec: Math.floor(process.uptime()),
     },
+  };
+  log.debug("system snapshot generated", {
+    latencyMs: Date.now() - t0,
+    redisOk,
+    rsshubOk,
+    weweOk,
+    queueNames: Object.keys(queues).join(","),
   });
+  return NextResponse.json(payload);
 }

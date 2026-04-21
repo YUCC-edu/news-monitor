@@ -36,6 +36,20 @@
       "when": 1776500000000,
       "tag": "0004_clusters_centroid",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776600000000,
+      "tag": "0005_search_backoff",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776700000000,
+      "tag": "0006_enrichment_taxonomy",
+      "breakpoints": true
     }
   ]
 }

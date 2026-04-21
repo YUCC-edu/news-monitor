@@ -41,6 +41,8 @@ export const sources = pgTable(
     lastOkAt: timestamp("last_ok_at", { withTimezone: true }),
     lastError: text("last_error"),
     failCount: integer("fail_count").notNull().default(0),
+    /** When set and in the future, fetch worker skips run until this instant (failure backoff). */
+    nextRunAfter: timestamp("next_run_after", { withTimezone: true }),
     dedupKey: text("dedup_key"),
     initialFetchDays: integer("initial_fetch_days"),
     maxItemAgeDays: integer("max_item_age_days"),
@@ -113,6 +115,18 @@ export const itemEnrichments = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    categoryDomain: text("category_domain")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    categoryTopic: text("category_topic")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    categoryEntity: text("category_entity")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     embedding: vector1024("embedding"),
     clusterId: uuid("cluster_id").references(() => clusters.id, {
       onDelete: "set null",
@@ -125,6 +139,9 @@ export const itemEnrichments = pgTable(
     pk: primaryKey({ columns: [t.itemId] }),
     clusterIdx: index("enr_cluster_idx").on(t.clusterId),
     tagsIdx: index("enr_tags_gin_idx").using("gin", t.tags),
+    domainIdx: index("enr_category_domain_gin_idx").using("gin", t.categoryDomain),
+    topicIdx: index("enr_category_topic_gin_idx").using("gin", t.categoryTopic),
+    entityIdx: index("enr_category_entity_gin_idx").using("gin", t.categoryEntity),
   }),
 );
 

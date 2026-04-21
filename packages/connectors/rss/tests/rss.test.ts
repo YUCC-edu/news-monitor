@@ -39,6 +39,29 @@ describe("rssConnector", () => {
     expect(items[0].publishedAt?.toISOString()).toBe("2026-04-17T10:00:00.000Z");
   });
 
+  it("coerces guid when rss-parser supplies a Date (avoids createHash on Date)", async () => {
+    const d = new Date("2026-04-17T10:00:00.000Z");
+    parseURLMock.mockResolvedValue({
+      items: [
+        {
+          guid: d,
+          title: "Atom-like id as date",
+          link: "https://example.com/1",
+        },
+      ],
+    });
+
+    const { rssConnector } = await import("../src/index");
+    const { items } = await rssConnector.fetch({
+      source: { id: "s1", config: { feedUrl: "https://example.com/feed.xml" } },
+      now: new Date("2026-04-17T10:10:00.000Z"),
+      signal: new AbortController().signal,
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0].externalId).toBe("2026-04-17T10:00:00.000Z");
+  });
+
   it("falls back to link hash when guid is missing", async () => {
     parseURLMock.mockResolvedValue({
       items: [

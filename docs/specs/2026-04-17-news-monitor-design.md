@@ -203,9 +203,10 @@ weight                int default 0
 ### 5.3 索引
 - `items(source_id, published_at desc)`
 - `items(fetched_at desc)`
-- `items.title` GIN trigram（关键词检索）
-- `item_enrichments.embedding` ivfflat（cosine）
+- `items.title` GIN trigram（关键词检索；迁移 `0005_search_backoff.sql` 启用 `pg_trgm` + GIN）
+- `item_enrichments.embedding` ivfflat（cosine，`lists` 默认 50，可按数据量在迁移中调参）
 - `item_enrichments.tags` GIN
+- `sources.next_run_after`：抓取失败退避的下次可执行时间（与 BullMQ `every` 并存；作业开头若未到点则直接跳过）
 
 ---
 
@@ -218,8 +219,8 @@ weight                int default 0
 
 ### 6.2 失败策略
 - 单次抓取失败：异常入 `last_error`，`fail_count++`。
-- 退避：连续失败时把 **本源**的下次执行推迟到 `min(2^fail_count * 60s, 2h)`。
-- `fail_count >= 10` 自动 `enabled=false` 并在大屏告警面板高亮。
+- 退避：连续失败时把 **本源**的下次执行推迟到 `min(2^fail_count * 60s, 2h)`（写入 `sources.next_run_after`；BullMQ repeat `every` 仍按间隔触发，作业开头若未到点则跳过，不与 `upsertJobScheduler` 的 `every` 互斥覆盖）。
+- `fail_count >= 10` 自动 `enabled=false`，worker 移除该源的 repeat scheduler，并 `PUBLISH sources.changed` 同步；SSE 发 `source.health`。
 
 ### 6.3 去重
 - DB 唯一索引 `(source_id, external_id)`。
@@ -263,7 +264,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 
 ### 7.4 失败兜底
 - AI 流水线失败 **不阻塞**展示：item 已写入即可在大屏出现，仅缺标签 / 翻译 / 所属事件。
-- 提供「重新 enrich」管理操作（按 source / 时间窗 / 单条三种粒度）。
+- 提供「重新 enrich」管理操作（按 source / 时间窗 / 单条三种粒度）：**产品入口**为 Web **`/ops` 运维页** + `POST /api/ops/re-enrich`（有单次条数上限）；脚本 `scripts/retry-enrich-failed.ts` 等仍可用于队列失败重试。
 
 ---
 
@@ -329,6 +330,7 @@ LLM_EMBEDDING_MODEL=text-embedding-3-small
 - 今日新增（按平台堆叠柱状图）
 - 标签 TopN（条形图）
 - 活跃 cluster TopN（按 24h `item_count`）
+- 统计页提供 **导出当前概览为 CSV**（与 §2「轻量 CSS 图」一致；若未来引入 ECharts 属可选增强）
 
 ---
 

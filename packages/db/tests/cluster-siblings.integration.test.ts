@@ -14,14 +14,19 @@ describe.skipIf(!hasDb)("listClusterSiblingItems (integration)", () => {
     const sibs = await listClusterSiblingItems({
       clusterId: withCluster.clusterId,
       excludeItemId: withCluster.id,
+      excludeSourceId: withCluster.sourceId,
       limit: 20,
     });
     expect(Array.isArray(sibs)).toBe(true);
+    const sourceSet = new Set<string>();
     for (const s of sibs) {
       expect(s.itemId).toBeTruthy();
       expect(s.sourceId).toBeTruthy();
       expect(s.platform).toBeTruthy();
       expect(s.sourceName).toBeTruthy();
+      expect(s.sourceId).not.toBe(withCluster.sourceId);
+      expect(sourceSet.has(s.sourceId)).toBe(false);
+      sourceSet.add(s.sourceId);
     }
   });
 });

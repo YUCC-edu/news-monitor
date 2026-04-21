@@ -1,6 +1,8 @@
 import type { Job } from "bullmq";
 import { embedText, translateAndTag } from "@news/ai";
+import { createLogger } from "@news/shared";
 import {
+  getClusterById,
   getItemById,
   updateClusterCentroidAfterItemEnriched,
   upsertItemEnrichment,
@@ -12,10 +14,18 @@ type EnrichItemJobData = {
   itemId: string;
 };
 
-export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
-  const item = await getItemById(job.data.itemId);
-  if (!item) return { ok: false, reason: "item-not-found" };
+const log = createLogger("worker:enrich-item");
 
+export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
+  const jobLog = log.child({ queue: "enrich-item", jobId: job.id, itemId: job.data.itemId });
+  jobLog.debug("job started");
+  const item = await getItemById(job.data.itemId);
+  if (!item) {
+    jobLog.warn("item missing; skip enrich");
+    return { ok: false, reason: "item-not-found" };
+  }
+
+  const itemLog = jobLog.child({ sourceId: item.sourceId });
   const output = await translateAndTag({
     title: item.title,
     contentText: item.contentText,
@@ -30,11 +40,23 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
     titleZh: output.titleZh,
     contentZh: output.contentZh,
     tags: output.tags,
+    categoryDomain: output.categoryDomain,
+    categoryTopic: output.categoryTopic,
+    categoryEntity: output.categoryEntity,
     embedding,
     clusterId: cluster.clusterId,
   });
 
   await updateClusterCentroidAfterItemEnriched(cluster.clusterId, embedding);
+  itemLog.info("enrich completed", {
+    lang: output.lang,
+    tagsCount: output.tags.length,
+    categoryDomainCount: output.categoryDomain.length,
+    categoryTopicCount: output.categoryTopic.length,
+    categoryEntityCount: output.categoryEntity.length,
+    clusterId: cluster.clusterId,
+    isNewCluster: cluster.isNew,
+  });
 
   await publish("news.events", {
     type: "item.enriched",
@@ -43,10 +65,26 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
       titleZh: output.titleZh,
       contentZh: output.contentZh,
       tags: output.tags,
+      categoryDomain: output.categoryDomain,
+      categoryTopic: output.categoryTopic,
+      categoryEntity: output.categoryEntity,
       lang: output.lang,
       clusterId: cluster.clusterId,
     },
   });
+
+  const clusterRow = await getClusterById(cluster.clusterId);
+  if (clusterRow) {
+    await publish("news.events", {
+      type: "cluster.updated",
+      cluster: {
+        id: clusterRow.id,
+        topic: clusterRow.topic,
+        itemCount: clusterRow.itemCount,
+        lastSeenAt: clusterRow.lastSeenAt?.toISOString() ?? null,
+      },
+    });
+  }
 
   return { ok: true, tags: output.tags.length, clusterId: cluster.clusterId, isNewCluster: cluster.isNew };
 }

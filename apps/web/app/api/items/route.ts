@@ -35,6 +35,8 @@ export async function GET(request: Request) {
   const feed =
     feedRaw === "curated" ? ("curated" as const) : ("all" as const);
   const range = url.searchParams.get("range");
+  const sortRaw = url.searchParams.get("sort");
+  const sortBy = sortRaw === "fetched" ? "fetched" : "published";
   const publishedSince = publishedSinceFromRange(range);
   const rows = await listItems({
     feed,
@@ -44,6 +46,7 @@ export async function GET(request: Request) {
     q,
     limit,
     tags,
+    sortBy,
   });
   return NextResponse.json(rows);
 }

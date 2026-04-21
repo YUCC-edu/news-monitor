@@ -42,7 +42,7 @@ cd docker
 docker compose up -d --build web
 ```
 
-打开 <http://localhost:3000> → 进入时间轴。
+打开 [http://localhost:3000](http://localhost:3000) → 进入时间轴。
 
 ## Web 一站式设置页
 
@@ -103,17 +103,23 @@ docker compose up -d wewe-rss
 # 4. 在我们 web 的 /creators 页，选"公众号"，粘贴 Feed URL 即可
 ```
 
-> 需要在 `.env` 中配置 `WEWE_RSS_BASE` 与 `WEWE_RSS_AUTH_CODE`（后者要与 compose 里 AUTH_CODE 一致）。
+> 需要在 `.env` 中配置 `WEWE_RSS_BASE` 与 `WEWE_RSS_AUTH_CODE`（后者要与 compose 里 AUTH_CODE 一致）。`WEWE_RSS_AUTH_CODE` 请只用可打印 ASCII（不要从带中文或弯引号的文档里整段粘贴），否则 WeWe 自带 SPA 可能整页报错 `RequestInit` / `ISO-8859-1`，且无法在面板里登录或同步；**不影响** news-monitor Worker 用 Atom URL 拉取（只要 URL 与 code 正确）。设置页保存时会自动去掉 BOM 与非 ASCII。
 
 #### 公众号一直抓失败？按顺序做这三步
 
-1. **开一个专门终端，启动 Worker**（只开 Web 页面不会拉 Feed；抓取是 Worker 做的）  
-   在**仓库根目录**执行：`pnpm --filter @news/worker dev`  
+1. **开一个专门终端，启动 Worker**（只开 Web 页面不会拉 Feed；抓取是 Worker 做的）
+  在**仓库根目录**执行：`pnpm --filter @news/worker dev`  
    看到 `[worker] scheduler ready` 且无报错即正常。保持这个窗口不关。
-2. **把 `WEWE_RSS_BASE`、`WEWE_RSS_AUTH_CODE` 写在仓库根目录的 `.env`**  
-   Worker 用的是 `apps/worker` 里的 `tsx --env-file=../../.env`，**不会读** `apps/web/.env.local`。  
+2. **把 `WEWE_RSS_BASE`、`WEWE_RSS_AUTH_CODE` 写在仓库根目录的 `.env`**
+  Worker 用的是 `apps/worker` 里的 `tsx --env-file=../../.env`，**不会读** `apps/web/.env.local`。  
    `WEWE_RSS_AUTH_CODE` 必须与 `docker/.env`（或 compose）里 WeWe 的 `WEWE_RSS_AUTH_CODE` / 容器 `AUTH_CODE` 一致。改完后**关掉 Worker 再重新执行第 1 步**。
-3. **在网页里对该公众号点一次「立即抓取」**（或等定时抓取）。若仍失败，看博主卡片上的 **`lastError`** 全文；若是网络/401，多半是第 2 步或 Feed 地址（Docker 内不要用宿主机的 `127.0.0.1`，可改成 `host.docker.internal` 等 Worker 能访问的地址）。
+3. **在网页里对该公众号点一次「立即抓取」**（或等定时抓取）。若仍失败，看博主卡片上的 `**lastError`** 全文；若是网络/401，多半是第 2 步或 Feed 地址（Docker 内不要用宿主机的 `127.0.0.1`，可改成 `host.docker.internal` 等 Worker 能访问的地址）。
+
+#### WeWe 网页打不开、控制台报 fetch / Headers / ISO-8859-1
+
+这是 **WeWe-RSS 浏览器端** 的限制（请求头只能是 Latin-1），与 Worker 抓取不是同一条路径。上游前端在 `httpBatchLink` 里把 `localStorage` 的 `authCode` 原样放进 `Authorization` 头；若你曾在登录框粘贴过带 BOM/中文的口令，或从文档里复制了「智能引号」，就会触发该错误，而 **news-monitor 里保存的 `WEWE_RSS_AUTH_CODE` 不会同步到浏览器的 `localStorage`**。
+
+处理（在 WeWe 的源站上操作）：F12 → Application → Local Storage → 删除键 `authCode`，或对 `http://127.0.0.1:4000`（或你的实际域名）「清除站点数据」→ 刷新 `/dash` 后重新登录；compose / `.env` 里的口令保持纯 ASCII。必要时 `docker pull` 升级镜像并在上游 [cooderl/wewe-rss](https://github.com/cooderl/wewe-rss) 搜同类 issue。
 
 ## 信源去重与迁移（M8）
 
@@ -132,17 +138,48 @@ pnpm --filter @news/worker dev
 
 # 手动备份数据库（保留最近14份）
 sh docker/cron-pgdump.sh
+
+# BullMQ 队列失败排查 / 重试 / 清理（需仓库根目录 .env 中 REDIS_URL）
+pnpm exec tsx --env-file=.env scripts/inspect-queue-failures.ts
+pnpm exec tsx --env-file=.env scripts/inspect-queue-failures.ts --recent-minutes 30
+pnpm exec tsx --env-file=.env scripts/retry-fetch-failed.ts
+pnpm exec tsx --env-file=.env scripts/retry-enrich-failed.ts
+pnpm exec tsx --env-file=.env scripts/clean-failed-jobs.ts --queue fetch-source
+pnpm exec tsx --env-file=.env scripts/clean-failed-jobs.ts --queue enrich-item --apply
+
+# 本地调试日志（按级别 / 模块过滤）
+$env:LOG_LEVEL="debug"; pnpm --filter @news/worker dev
+$env:LOG_LEVEL="info"; $env:LOG_MODULES="worker:fetch-source,worker:enrich-item"; pnpm --filter @news/worker dev
 ```
 
+详细步骤与根因对照见 `**docs/runbooks/queue-failed-jobs.md**`。
+
 每天 03:00 worker 会自动执行 retention：删除 90 天前 items，并清理孤立 clusters。
+
+## 重新 enrich（Web + 脚本）
+
+- **Web**：打开 `**/ops` 运维页**，按 **信源 / 时间窗 / 单条** 将条目重新入队 `enrich-item`（单次最多 500 条）。
+- **HTTP API**：`POST /api/ops/re-enrich`，body 示例：`{ "scope": "source", "sourceId": "<uuid>", "limit": 200 }`；`scope` 还可为 `window`（配合 `since` / `until` ISO 字符串）或 `item`（配合 `itemId`）。
+- **脚本**：`pnpm exec tsx --env-file=.env scripts/retry-enrich-failed.ts` 用于重试队列里 **已失败** 的 enrich 作业（与上面「主动重跑」互补）。
+
+## 端到端（E2E）自动化
+
+本期仓库 **不引入 Playwright**；回归以数据库迁移、`pnpm --filter @news/db test` 与关键路径手动冒烟为主。若后续要在 CI 加浏览器级 E2E，再单独加依赖与流水线步骤。
 
 ## 运行情况判读（设置页）
 
 - 绿（OK）：依赖可达，队列无明显异常。
 - 红（FAIL）：优先检查对应 URL 配置、容器运行状态与网络联通。
-- 队列 `failed` 增长：查看 worker 日志，确认上游接口和 Redis 正常。
+- 队列 `failed` 增长：多为历史失败作业仍留在 Redis（`fetch-source` 单队列最多约保留 200 条）；先用 `scripts/inspect-queue-failures.ts` 看错误聚类，再按 `**docs/runbooks/queue-failed-jobs.md`** 修正配置并重试或清理。
 - 队列 `waiting` 长期积压：通常是 worker 未启动、并发不足或依赖故障。
 - 修改配置后仍未生效：若 `uptime` 持续增长，通常说明进程尚未重启。
+- 本地日志调试：`LOG_LEVEL` 控制输出门槛（`debug|info|warn|error`），`LOG_MODULES` 可限定模块（逗号分隔）；Worker 关键模块为 `worker:index` / `worker:fetch-source` / `worker:enrich-item`。
+
+## 运维演练与SLO（建议）
+
+- 每周演练 5 类故障：Redis 断连、LLM 404、WeWe 401、RSSHub 超时、历史 failed 残留。
+- 建议基线：`queue failed` 不持续增长、`queue waiting` 不长期 > 100、health 24h 流水线比例稳定回升。
+- 排查路径：设置页发现异常 → `queue:inspect -- --recent-minutes 30` → 修复后 `queue:retry-`* → 再 inspect 验证。
 
 ## 仓库结构
 
@@ -153,6 +190,7 @@ packages/db           Drizzle schema / 客户端 / 迁移
 docker/               compose.yaml + Dockerfile
 docs/specs/           设计文档
 docs/plans/           实现计划
+docs/runbooks/        运维排障（如队列 failed）
 ```
 
 后续里程碑（apps/worker、connectors/*、ai 等）见 `docs/plans/`.

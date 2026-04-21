@@ -5,29 +5,22 @@ import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { cn } from "@/app/ui/cn";
+import { CommandPalette } from "@/app/ui/command-palette";
+import { DASH_NAV } from "@/lib/global-search";
 
-const NAV: Array<{ href: string; label: string; group?: string }> = [
-  { href: "/", label: "时间轴", group: "时间轴" },
-  { href: "/categories", label: "分类", group: "时间轴" },
-  { href: "/favorites", label: "收藏", group: "时间轴" },
-  { href: "/sources", label: "信源", group: "运营" },
-  { href: "/creators", label: "博主订阅", group: "运营" },
-  { href: "/health", label: "信源健康", group: "运营" },
-  { href: "/keywords", label: "关键词", group: "运营" },
-  { href: "/stats", label: "统计", group: "系统" },
-  { href: "/settings", label: "设置", group: "系统" },
-  { href: "/system", label: "系统", group: "系统" },
-];
+const NAV = DASH_NAV;
 
 const CRUMB: Record<string, string> = {
   "/": "时间轴",
   "/categories": "分类",
   "/favorites": "收藏",
+  "/link-saves": "链接收藏",
   "/sources": "信源管理",
   "/creators": "博主订阅",
   "/health": "信源健康",
   "/keywords": "关键词",
   "/stats": "统计",
+  "/ops": "运维",
   "/settings": "设置",
   "/system": "系统",
 };
@@ -35,10 +28,21 @@ const CRUMB: Record<string, string> = {
 export default function DashLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const [mobileNav, setMobileNav] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
     setMobileNav(false);
   }, [pathname]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const groups = Array.from(new Set(NAV.map((n) => n.group).filter(Boolean))) as string[];
 
@@ -166,9 +170,23 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
           <span style={{ fontWeight: 600, color: "var(--fg-0)" }}>
             {CRUMB[pathname] ?? "news-monitor"}
           </span>
-          <span style={{ marginLeft: "auto" }} className="nm-muted">
-            ⌘K 搜索（即将）
-          </span>
+          <button
+            type="button"
+            aria-label="打开全局搜索"
+            onClick={() => setSearchOpen(true)}
+            style={{
+              marginLeft: "auto",
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--fg-2)",
+              borderRadius: 8,
+              padding: "4px 10px",
+              cursor: "pointer",
+            }}
+            title="打开全局搜索"
+          >
+            ⌘K 搜索
+          </button>
         </header>
 
         {mobileNav ? (
@@ -219,6 +237,7 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
         >
           {children}
         </motion.main>
+        <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
       </div>
 
     </div>

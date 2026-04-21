@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Parser from "rss-parser";
-import type { Connector, ConnectorFetchResult, NormalizedItem } from "@news/connectors-core";
+import { coerceRssIdField, type Connector, type ConnectorFetchResult, type NormalizedItem } from "@news/connectors-core";
 
 type RssConfig = {
   feedUrl: string;
@@ -41,10 +41,12 @@ function hashText(value: string) {
 }
 
 function resolveExternalId(item: RssItem) {
-  if (item.guid) return item.guid;
-  if (item.id) return item.id;
-  if (item.link) return hashText(item.link);
-  if (item.title) return hashText(item.title);
+  const guid = coerceRssIdField((item as { guid?: unknown }).guid);
+  if (guid) return guid;
+  const id = coerceRssIdField((item as { id?: unknown }).id);
+  if (id) return id;
+  if (typeof item.link === "string" && item.link.length > 0) return hashText(item.link);
+  if (typeof item.title === "string" && item.title.length > 0) return hashText(item.title);
   return hashText(JSON.stringify(item));
 }
 

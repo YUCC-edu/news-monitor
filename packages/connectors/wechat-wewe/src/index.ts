@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Parser from "rss-parser";
-import type { Connector, ConnectorFetchResult, NormalizedItem } from "@news/connectors-core";
+import { coerceRssIdField, type Connector, type ConnectorFetchResult, type NormalizedItem } from "@news/connectors-core";
 import { normalizeWeWeFeedUrl } from "./normalize-feed-url";
 import { sanitizeAtomXmlAggressive, sanitizeAtomXmlRaw } from "./sanitize-atom-xml";
 
@@ -50,8 +50,13 @@ function getWeWeBase() {
   return base.replace(/\/+$/, "");
 }
 
+function sanitizeWeWeAuthCode(raw: string | undefined) {
+  if (!raw) return "";
+  return raw.replace(/\uFEFF/g, "").replace(/[^\x20-\x7E]/g, "").trim();
+}
+
 function buildFeedUrl(cfg: WeWeConfig) {
-  const authCode = process.env.WEWE_RSS_AUTH_CODE;
+  const authCode = sanitizeWeWeAuthCode(process.env.WEWE_RSS_AUTH_CODE);
   let base: string;
   if (cfg.feedUrl) {
     base = normalizeWeWeFeedUrl(cfg.feedUrl);
@@ -69,10 +74,12 @@ function hashText(value: string) {
 }
 
 function resolveExternalId(item: RssItem) {
-  if (item.guid) return item.guid;
-  if (item.id) return item.id;
-  if (item.link) return hashText(item.link);
-  if (item.title) return hashText(item.title);
+  const guid = coerceRssIdField((item as { guid?: unknown }).guid);
+  if (guid) return guid;
+  const id = coerceRssIdField((item as { id?: unknown }).id);
+  if (id) return id;
+  if (typeof item.link === "string" && item.link.length > 0) return hashText(item.link);
+  if (typeof item.title === "string" && item.title.length > 0) return hashText(item.title);
   return hashText(JSON.stringify(item));
 }
 
@@ -119,14 +126,25 @@ export const wechatWeweConnector: Connector = {
         /\b127\.0\.0\.1\b/.test(url) || /\blocalhost\b/i.test(url)
           ? " Worker 若在 Docker/另一台机器上，URL 里的 127.0.0.1/localhost 会指向该环境自身，请改为对 Worker 可达的地址（如 host.docker.internal、宿主机 IP，或 compose 网络内服务名 wewe-rss:4000）。"
           : "";
-      throw new Error(`wechat-wewe 无法请求 Feed（${cause}）。${loopbackHint}`);
+      const cat = /timeout|aborted/i.test(cause) ? "timeout" : "network";
+      throw new Error(`wechat-wewe [${cat}] 无法请求 Feed（${cause}）。${loopbackHint}`);
     }
     if (!res.ok) {
       const authHint =
         res.status === 401 || res.status === 403
           ? " 请核对仓库根目录 .env 的 WEWE_RSS_AUTH_CODE 与 WeWe-RSS 的 AUTH_CODE 一致；Worker（pnpm --filter @news/worker dev）只加载该 .env，不会读取 apps/web/.env.local。"
           : "";
-      throw new Error(`wechat-wewe feed HTTP ${res.status}${authHint}`);
+      const cat =
+        res.status === 401 || res.status === 403
+          ? "auth"
+          : res.status === 429
+            ? "rate_limit"
+            : res.status === 404
+              ? "not_found"
+              : res.status >= 500
+                ? "upstream"
+                : "unknown";
+      throw new Error(`wechat-wewe [${cat}] feed HTTP ${res.status}${authHint}`);
     }
     let rawXml = await res.text();
     let ct = res.headers.get("content-type") || "";
@@ -148,7 +166,7 @@ export const wechatWeweConnector: Connector = {
           },
         });
         if (!retry.ok) {
-          throw new Error(`wechat-wewe feed retry HTTP ${retry.status}`);
+          throw new Error(`wechat-wewe [upstream] feed retry HTTP ${retry.status}`);
         }
         rawXml = await retry.text();
         ct = retry.headers.get("content-type") || "";
@@ -161,7 +179,7 @@ export const wechatWeweConnector: Connector = {
     }
     if (looksHtml) {
       throw new Error(
-        `wechat-wewe 返回的是网页 HTML，不是 Atom。浏览器地址栏里的「/dash/feeds/MP_…」是 WeWe 控制台前端路由；` +
+        `wechat-wewe [format] 返回的是网页 HTML，不是 Atom。浏览器地址栏里的「/dash/feeds/MP_…」是 WeWe 控制台前端路由；` +
           `服务端订阅接口与官方文档一致，为「/feeds/MP_….atom」。本程序已按此转换后请求：${url}。` +
           ` 若仍见此错误，请检查鉴权码或是否走了反向代理缓存。`,
       );
@@ -176,7 +194,7 @@ export const wechatWeweConnector: Connector = {
         feed = (await new Parser().parseString(sanitizeAtomXmlAggressive(rawXml))) as RssFeed;
       } catch (e2) {
         const second = e2 instanceof Error ? e2.message : String(e2);
-        throw new Error(`wechat-wewe Atom 解析失败: ${first}；二次修复后: ${second}`);
+        throw new Error(`wechat-wewe [format] Atom 解析失败: ${first}；二次修复后: ${second}`);
       }
     }
     const avatarUrl =

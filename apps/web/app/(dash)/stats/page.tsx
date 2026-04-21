@@ -48,16 +48,72 @@ export default function StatsPage() {
     };
   }, []);
 
+  function downloadCsv() {
+    if (!data) return;
+    const lines: string[] = [];
+    const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    lines.push(["section", "key", "value"].join(","));
+    lines.push(["totals", "total_items", String(data.totals.total_items)].join(","));
+    lines.push(["totals", "items_24h", String(data.totals.items_24h)].join(","));
+    lines.push(["totals", "total_sources", String(data.totals.total_sources)].join(","));
+    lines.push(["totals", "active_sources", String(data.totals.active_sources)].join(","));
+    lines.push(["totals", "total_clusters", String(data.totals.total_clusters)].join(","));
+    for (const p of data.byPlatform) {
+      lines.push(["byPlatform", esc(p.kind), String(p.count)].join(","));
+    }
+    for (const t of data.topTags) {
+      lines.push(["topTags", esc(t.tag), String(t.count)].join(","));
+    }
+    for (const c of data.topClusters) {
+      lines.push(
+        ["topClusters", esc(c.id), esc(`${c.topic ?? ""}\t${c.itemCount}\t${c.lastSeenAt}`)].join(","),
+      );
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `stats-overview-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   const maxPlatform = Math.max(1, ...(data?.byPlatform.map((p) => p.count) ?? [1]));
   const maxTag = Math.max(1, ...(data?.topTags.map((p) => p.count) ?? [1]));
 
   return (
     <div>
-      <header style={{ display: "flex", alignItems: "baseline", marginBottom: 16 }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          marginBottom: 16,
+          flexWrap: "wrap",
+          gap: 10,
+        }}
+      >
         <h1 className="nm-title">统计</h1>
         <span style={{ marginLeft: 12 }} className="nm-muted">
           近 7 天数据概览
         </span>
+        {!loading && data ? (
+          <button
+            type="button"
+            onClick={() => downloadCsv()}
+            style={{
+              marginLeft: "auto",
+              padding: "6px 12px",
+              borderRadius: 8,
+              border: "1px solid #2f4573",
+              background: "transparent",
+              color: "#95b4ff",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            导出 CSV
+          </button>
+        ) : null}
       </header>
 
       {loading || !data ? (

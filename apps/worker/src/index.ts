@@ -5,12 +5,20 @@ import { hnConnector } from "@news/connectors-hn";
 import { rssConnector } from "@news/connectors-rss";
 import { xRsshubConnector } from "@news/connectors-x-rsshub";
 import { wechatWeweConnector } from "@news/connectors-wechat-wewe";
+import { categorizeErrorMessage, classifyRemediation, createLogger } from "@news/shared";
 import { handleFetchSource } from "./jobs/fetch-source";
 import { handleEnrichItem } from "./jobs/enrich-item";
 import { handleNameCluster } from "./jobs/name-cluster";
 import { handleRetention } from "./jobs/retention";
-import { FETCH_QUEUE_NAME, subscribeSourceChanges, syncRepeatJobs } from "./scheduler";
+import {
+  FETCH_QUEUE_NAME,
+  removeSourceSchedule,
+  subscribeSourceChanges,
+  syncRepeatJobs,
+} from "./scheduler";
 import { closePublisher } from "./ipc/publish";
+
+const log = createLogger("worker:index");
 
 const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
@@ -46,6 +54,15 @@ const worker = new Worker(
             ),
           ),
         );
+      },
+      onAfterFetchFailure: async ({ sourceId, meta }) => {
+        if (meta?.autoDisabled) {
+          await removeSourceSchedule(queue, sourceId);
+          await queueConnection.publish(
+            "sources.changed",
+            JSON.stringify({ op: "upsert", id: sourceId }),
+          );
+        }
       },
     }),
   {
@@ -102,7 +119,39 @@ const retentionWorker = new Worker(
   },
 );
 
+function logJobFailure(queueName: string, job: { id?: string; name?: string; data?: unknown } | undefined, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const errorClass = error instanceof Error ? error.name : typeof error;
+  const category = categorizeErrorMessage(message);
+  const remediation = classifyRemediation(category);
+  const payload = {
+    queue: queueName,
+    jobName: job?.name,
+    jobId: job?.id,
+    data: job?.data,
+    errorClass,
+    errorCategory: category,
+    remediation,
+    error,
+  };
+  if (remediation === "retry") {
+    log.warn("job failed (likely transient; retry path preferred)", payload);
+    return;
+  }
+  if (remediation === "manual") {
+    log.warn("job failed (manual fix required)", payload);
+    return;
+  }
+  log.error("job failed (unknown classification)", payload);
+}
+
 async function main() {
+  log.info("worker booting", {
+    fetchConcurrency: 8,
+    enrichConcurrency: 4,
+    nameClusterConcurrency: 2,
+    retentionConcurrency: 1,
+  });
   await syncRepeatJobs(queue);
   await retentionQueue.upsertJobScheduler(
     "daily-retention",
@@ -114,35 +163,36 @@ async function main() {
     },
   );
   subscribeSourceChanges(subConnection, queue);
-  console.log("[worker] scheduler ready");
+  log.info("scheduler ready");
 }
 
 worker.on("completed", (job, result) => {
-  console.log(`[worker] completed ${job.name} ${job.id}`, result);
+  log.info("job completed", { queue: FETCH_QUEUE_NAME, jobName: job.name, jobId: job.id, data: job.data, result });
 });
 worker.on("failed", (job, error) => {
-  console.error(`[worker] failed ${job?.name} ${job?.id}`, error);
+  logJobFailure(FETCH_QUEUE_NAME, job, error);
 });
 enrichWorker.on("completed", (job, result) => {
-  console.log(`[worker] completed ${job.name} ${job.id}`, result);
+  log.info("job completed", { queue: "enrich-item", jobName: job.name, jobId: job.id, data: job.data, result });
 });
 enrichWorker.on("failed", (job, error) => {
-  console.error(`[worker] failed ${job?.name} ${job?.id}`, error);
+  logJobFailure("enrich-item", job, error);
 });
 nameClusterWorker.on("completed", (job, result) => {
-  console.log(`[worker] completed ${job.name} ${job.id}`, result);
+  log.info("job completed", { queue: "name-cluster", jobName: job.name, jobId: job.id, data: job.data, result });
 });
 nameClusterWorker.on("failed", (job, error) => {
-  console.error(`[worker] failed ${job?.name} ${job?.id}`, error);
+  logJobFailure("name-cluster", job, error);
 });
 retentionWorker.on("completed", (job, result) => {
-  console.log(`[worker] completed ${job.name} ${job.id}`, result);
+  log.info("job completed", { queue: "retention", jobName: job.name, jobId: job.id, data: job.data, result });
 });
 retentionWorker.on("failed", (job, error) => {
-  console.error(`[worker] failed ${job?.name} ${job?.id}`, error);
+  logJobFailure("retention", job, error);
 });
 
 async function shutdown() {
+  log.info("worker shutting down");
   await worker.close();
   await enrichWorker.close();
   await nameClusterWorker.close();
@@ -159,7 +209,10 @@ async function shutdown() {
   await closePublisher();
 }
 
-void main();
+void main().catch((error) => {
+  log.error("worker crashed during startup", { error });
+  process.exit(1);
+});
 
 process.on("SIGINT", () => {
   void shutdown().finally(() => process.exit(0));

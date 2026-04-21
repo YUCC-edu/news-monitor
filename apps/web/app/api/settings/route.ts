@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createLogger } from "@news/shared";
 
 const ENV_KEYS = [
   "DATABASE_URL",
@@ -22,6 +23,12 @@ type ParsedLine =
   | { type: "key"; key: string; value: string; raw: string };
 
 const ENV_PATH = path.resolve(process.cwd(), "..", "..", ".env");
+const log = createLogger("api:settings");
+
+/** WeWe 前端会把 AUTH 放进 fetch Headers；非 ISO-8859-1 字符会整页报错。仅保留可打印 ASCII。 */
+function sanitizeWeWeAuthCode(raw: string) {
+  return raw.replace(/\uFEFF/g, "").replace(/[^\x20-\x7E]/g, "").trim();
+}
 
 function checksum(input: string) {
   return createHash("sha256").update(input).digest("hex");
@@ -79,11 +86,13 @@ function validateValues(values: Record<string, string | undefined>) {
 }
 
 export async function GET() {
+  const t0 = Date.now();
   let content = "";
   try {
     content = await fs.readFile(ENV_PATH, "utf-8");
   } catch (error) {
     const message = error instanceof Error ? error.message : "read .env failed";
+    log.error("settings read failed", { errorClass: error instanceof Error ? error.name : typeof error, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
@@ -92,14 +101,14 @@ export async function GET() {
   for (const line of lines) {
     if (line.type === "key") map.set(line.key, stripQuotes(line.value));
   }
-  return NextResponse.json({
+  const payload = {
     version: checksum(content),
     values: {
       DATABASE_URL: map.get("DATABASE_URL") ?? "",
       REDIS_URL: map.get("REDIS_URL") ?? "",
       RSSHUB_BASE: map.get("RSSHUB_BASE") ?? "",
       WEWE_RSS_BASE: map.get("WEWE_RSS_BASE") ?? "",
-      WEWE_RSS_AUTH_CODE: map.get("WEWE_RSS_AUTH_CODE") ?? "",
+      WEWE_RSS_AUTH_CODE: sanitizeWeWeAuthCode(map.get("WEWE_RSS_AUTH_CODE") ?? ""),
       LLM_BASE_URL: map.get("LLM_BASE_URL") ?? "",
       LLM_CHAT_MODEL: map.get("LLM_CHAT_MODEL") ?? "",
       LLM_EMBEDDING_MODEL: map.get("LLM_EMBEDDING_MODEL") ?? "",
@@ -112,12 +121,16 @@ export async function GET() {
       DATABASE_URL: maskUrl(map.get("DATABASE_URL")),
       REDIS_URL: maskUrl(map.get("REDIS_URL")),
     },
-  });
+  };
+  log.debug("settings loaded", { latencyMs: Date.now() - t0, llmApiKeySet: payload.secure.llmApiKeySet });
+  return NextResponse.json(payload);
 }
 
 export async function PUT(request: Request) {
+  const t0 = Date.now();
   const body = await request.json().catch(() => null);
   if (!body || typeof body !== "object") {
+    log.warn("settings save rejected: invalid json body");
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const rawValues =
@@ -130,14 +143,16 @@ export async function PUT(request: Request) {
   const updates: Record<string, string | undefined> = {};
   for (const key of Object.keys(rawValues)) {
     if (!ENV_KEYS.includes(key as (typeof ENV_KEYS)[number])) {
+      log.warn("settings save rejected: unsupported key", { key });
       return NextResponse.json({ error: `Unsupported key: ${key}` }, { status: 400 });
     }
     const value = rawValues[key];
     if (value == null) continue;
     if (typeof value !== "string") {
+      log.warn("settings save rejected: value must be string", { key });
       return NextResponse.json({ error: `${key} must be a string` }, { status: 400 });
     }
-    updates[key] = value;
+    updates[key] = key === "WEWE_RSS_AUTH_CODE" ? sanitizeWeWeAuthCode(value) : value;
   }
 
   if (clearLlmApiKey) updates.LLM_API_KEY = "";
@@ -145,6 +160,10 @@ export async function PUT(request: Request) {
   try {
     validateValues(updates);
   } catch (error) {
+    log.warn("settings save rejected: validation failed", {
+      errorClass: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : "Invalid input",
+    });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Invalid input" },
       { status: 400 },
@@ -157,11 +176,13 @@ export async function PUT(request: Request) {
     [content, st] = await Promise.all([fs.readFile(ENV_PATH, "utf-8"), fs.stat(ENV_PATH)]);
   } catch (error) {
     const message = error instanceof Error ? error.message : "read .env failed";
+    log.error("settings save failed: read env", { errorClass: error instanceof Error ? error.name : typeof error, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
   const oldVersion = checksum(content);
   if (version && version !== oldVersion) {
+    log.warn("settings save rejected: version conflict");
     return NextResponse.json(
       { error: "Configuration changed by another editor, please refresh first." },
       { status: 409 },
@@ -200,8 +221,14 @@ export async function PUT(request: Request) {
     await fs.writeFile(ENV_PATH, nextContent, "utf-8");
   } catch (error) {
     const message = error instanceof Error ? error.message : "write .env failed";
+    log.error("settings save failed: write env", { errorClass: error instanceof Error ? error.name : typeof error, message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
+  log.info("settings saved", {
+    latencyMs: Date.now() - t0,
+    keysUpdated: Object.keys(updates).join(","),
+    restartRequired: true,
+  });
   return NextResponse.json({ ok: true, version: checksum(nextContent), restartRequired: true });
 }

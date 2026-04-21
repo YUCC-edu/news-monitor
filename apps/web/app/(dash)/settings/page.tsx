@@ -67,14 +67,36 @@ function dot(ok: boolean | undefined, label?: string) {
   );
 }
 
-function inferAdvice(data: SystemData | null): string[] {
+function inferAdvice(data: SystemData | null, previous: SystemData | null): string[] {
   if (!data) return [];
   const advice: string[] = [];
   if (!data.env.redis.ok) advice.push("Redis 不可用：先检查 REDIS_URL 与容器状态。");
   if (!data.env.rsshub.ok) advice.push("RSSHub 不可用：检查 RSSHUB_BASE、网络与服务日志。");
   if (!data.env.wewe.ok) advice.push("WeWe 不可用：检查 WEWE_RSS_BASE 与 AUTH_CODE。");
-  const blocked = Object.entries(data.queues).filter(([, c]) => (c?.waiting ?? 0) > 100 || (c?.failed ?? 0) > 0);
-  if (blocked.length > 0) advice.push("检测到队列积压或失败，请查看 worker 日志并确认 Redis 连通。");
+  const queueIssues = Object.entries(data.queues).filter(([name, c]) => {
+    const waiting = c?.waiting ?? 0;
+    const failed = c?.failed ?? 0;
+    const prevFailed = previous?.queues?.[name]?.failed ?? 0;
+    const increasingFast = failed > prevFailed;
+    return waiting > 100 || failed >= 10 || increasingFast;
+  });
+  if (queueIssues.length > 0) {
+    const detail = queueIssues
+      .map(([name, c]) => {
+        const bits: string[] = [];
+        if ((c?.waiting ?? 0) > 100) bits.push(`waiting=${c?.waiting ?? 0}（积压）`);
+        const prevFailed = previous?.queues?.[name]?.failed ?? 0;
+        if ((c?.failed ?? 0) > 0) {
+          const delta = (c?.failed ?? 0) - prevFailed;
+          bits.push(`failed=${c?.failed ?? 0}${delta > 0 ? `（+${delta}）` : ""}`);
+        }
+        return `${name}（${bits.join("，")}）`;
+      })
+      .join("；");
+    advice.push(
+      `队列需关注：${detail}。判断策略：waiting>100、failed>=10、或 failed 相比上次轮询仍在增长。请先执行 pnpm run queue:inspect（必要时加 -- --recent-minutes 30）查看实时失败聚类；完整步骤见 docs/runbooks/queue-failed-jobs.md。修正后重启 Worker，再执行 pnpm run queue:retry-fetch / queue:retry-enrich；仅清历史可用 scripts/clean-failed-jobs.ts --queue <名> --apply。Redis 绿灯只代表连通，不代表队列无故障增长。`,
+    );
+  }
   return advice;
 }
 
@@ -87,8 +109,9 @@ export default function SettingsPage() {
   const [llmApiKeySet, setLlmApiKeySet] = useState(false);
   const [form, setForm] = useState<FormValues>(EMPTY_FORM);
   const [system, setSystem] = useState<SystemData | null>(null);
+  const [prevSystem, setPrevSystem] = useState<SystemData | null>(null);
 
-  const advice = useMemo(() => inferAdvice(system), [system]);
+  const advice = useMemo(() => inferAdvice(system, prevSystem), [system, prevSystem]);
 
   async function loadSettings() {
     setLoading(true);
@@ -114,6 +137,7 @@ export default function SettingsPage() {
   async function loadSystem() {
     try {
       const data = (await fetch("/api/system").then((r) => r.json())) as SystemData;
+      setPrevSystem(system);
       setSystem(data);
     } catch {
       // ignore
@@ -270,6 +294,14 @@ export default function SettingsPage() {
                 onChange={(v) => update("WEWE_RSS_AUTH_CODE", v)}
               />
             </div>
+            <p style={{ ...muted, marginTop: 8, maxWidth: 720 }}>
+              与 news-monitor 的 <code style={{ fontSize: 12 }}>.env</code> 不同，WeWe 网页会把登录码存进<strong>该域名下的</strong>{" "}
+              <code style={{ fontSize: 12 }}>localStorage.authCode</code>，并在每个请求里作为{" "}
+              <code style={{ fontSize: 12 }}>Authorization</code> 头发给后端；其中只要混入 BOM、中文、弯引号等就会整页报错。处理：在 WeWe
+              打开的页面上按 F12 → Application（应用）→ Local Storage → 选中 WeWe 的源站 → 删除键{" "}
+              <code style={{ fontSize: 12 }}>authCode</code> 或「清除站点数据」→ 刷新后重新登录，且口令必须与容器一致、仅 ASCII。本页保存的{" "}
+              <code style={{ fontSize: 12 }}>WEWE_RSS_AUTH_CODE</code> 只影响 Worker 拉 Atom，不会自动改掉浏览器里的 WeWe 缓存。
+            </p>
             <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
               {form.RSSHUB_BASE && (
                 <a href={form.RSSHUB_BASE} target="_blank" rel="noreferrer" style={linkBtn}>

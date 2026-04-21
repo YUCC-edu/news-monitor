@@ -8,7 +8,10 @@
     "dev:worker": "pnpm --filter @news/worker dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "queue:inspect": "tsx --env-file=.env scripts/inspect-queue-failures.ts",
+    "queue:retry-fetch": "tsx --env-file=.env scripts/retry-fetch-failed.ts",
+    "queue:retry-enrich": "tsx --env-file=.env scripts/retry-enrich-failed.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

@@ -9,6 +9,7 @@ describe("translateAndTag", () => {
           lang: "en",
           title_zh: "OpenAI 发布新模型",
           tags: ["模型发布", "Agent", "CustomTagA", "CustomTagB", "CustomTagC"],
+          category_entity: ["OpenAI"],
         }),
       embed: async () => Array(1024).fill(0),
     };
@@ -21,5 +22,6 @@ describe("translateAndTag", () => {
     expect(out.lang).toBe("en");
     expect(out.titleZh).toBe("OpenAI 发布新模型");
     expect(out.tags).toEqual(["模型发布", "Agent", "CustomTagA", "CustomTagB"]);
+    expect(out.categoryEntity).toContain("OpenAI");
   });
 });

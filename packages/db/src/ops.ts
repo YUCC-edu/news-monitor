@@ -1,9 +1,17 @@
-import { and, asc, desc, eq, ilike, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, lt, max, ne, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { computeDedupKey, type SourceKind } from "./dedup";
 import { getDb, getSql } from "./client";
 import type { Source } from "./schema";
-import { clusters, favorites, itemEnrichments, items, keywordRules, sources } from "./schema";
+import {
+  clusters,
+  favorites,
+  itemEnrichments,
+  items,
+  keywordRules,
+  sources,
+  userLinks,
+} from "./schema";
 
 export type { SourceKind };
 
@@ -42,7 +50,7 @@ export async function listSources() {
 
 export async function listSourceHealth() {
   const db = getDb();
-  return db
+  const base = await db
     .select({
       id: sources.id,
       name: sources.name,
@@ -53,9 +61,30 @@ export async function listSourceHealth() {
       lastOkAt: sources.lastOkAt,
       lastError: sources.lastError,
       failCount: sources.failCount,
+      nextRunAfter: sources.nextRunAfter,
     })
     .from(sources)
     .orderBy(desc(sources.lastRunAt), asc(sources.createdAt));
+
+  const sqlClient = getSql();
+  const stats = await sqlClient<
+    { source_id: string; total_24h: number; enriched_24h: number }[]
+  >`
+    SELECT i.source_id::text AS source_id,
+      COUNT(*)::int AS total_24h,
+      COUNT(*) FILTER (WHERE ie.item_id IS NOT NULL)::int AS enriched_24h
+    FROM items i
+    LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+    WHERE i.fetched_at > now() - interval '24 hours'
+    GROUP BY i.source_id
+  `;
+  const bySource = new Map(stats.map((s) => [s.source_id, s]));
+  return base.map((row) => {
+    const s = bySource.get(row.id);
+    const pipeline24hRate =
+      s && s.total_24h > 0 ? s.enriched_24h / s.total_24h : null;
+    return { ...row, pipeline24hRate };
+  });
 }
 
 export async function getSourceById(id: string) {
@@ -118,6 +147,7 @@ export async function upsertSource(input: SourceInput): Promise<UpsertSourceResu
               lastRunAt: null,
               lastError: null,
               failCount: 0,
+              nextRunAfter: null,
             }
           : {}),
       })
@@ -242,6 +272,17 @@ export async function resetSourceFirstFetch(sourceId: string) {
   return updated.length > 0;
 }
 
+/** Latest `items.published_at` for this source (null if no rows or all null pub dates). */
+export async function getMaxPublishedAtForSource(sourceId: string): Promise<Date | null> {
+  const db = getDb();
+  const rows = await db
+    .select({ mx: max(items.publishedAt) })
+    .from(items)
+    .where(eq(items.sourceId, sourceId));
+  const v = rows[0]?.mx;
+  return v ?? null;
+}
+
 export async function listRecentItemsBySource(sourceId: string, limit = 10) {
   const db = getDb();
   return db
@@ -266,7 +307,17 @@ export async function deleteSource(id: string) {
   return deleted.length > 0;
 }
 
-export async function markSourceRun(sourceId: string, input: MarkRunInput) {
+export type MarkSourceRunFailureMeta = {
+  enabled: boolean;
+  failCount: number;
+  autoDisabled: boolean;
+  nextRunAfter: Date | null;
+};
+
+export async function markSourceRun(
+  sourceId: string,
+  input: MarkRunInput,
+): Promise<MarkSourceRunFailureMeta | undefined> {
   const db = getDb();
   const at = input.at ?? new Date();
   if (input.ok) {
@@ -277,18 +328,114 @@ export async function markSourceRun(sourceId: string, input: MarkRunInput) {
         lastOkAt: at,
         failCount: 0,
         lastError: null,
+        nextRunAfter: null,
       })
       .where(eq(sources.id, sourceId));
-    return;
+    return undefined;
   }
-  await db
-    .update(sources)
-    .set({
-      lastRunAt: at,
-      failCount: sql`${sources.failCount} + 1`,
-      lastError: input.error ?? "Unknown error",
-    })
-    .where(eq(sources.id, sourceId));
+
+  const sqlClient = getSql();
+  const err = input.error ?? "Unknown error";
+  const rows = await sqlClient<
+    { fail_count: number; enabled: boolean; next_run_after: Date | null }[]
+  >`
+    UPDATE sources SET
+      last_run_at = ${at},
+      last_error = ${err},
+      fail_count = fail_count + 1,
+      next_run_after = now() + (
+        interval '1 second'
+        * LEAST((POWER(2, LEAST(fail_count + 1, 12)))::int * 60, 7200)
+      ),
+      enabled = CASE WHEN fail_count + 1 >= 10 THEN false ELSE enabled END
+    WHERE id = ${sourceId}::uuid
+    RETURNING fail_count, enabled, next_run_after
+  `;
+  const row = rows[0];
+  if (!row) return undefined;
+  return {
+    enabled: row.enabled,
+    failCount: row.fail_count,
+    autoDisabled: !row.enabled && row.fail_count >= 10,
+    nextRunAfter: row.next_run_after,
+  };
+}
+
+export async function getClusterById(clusterId: string) {
+  const db = getDb();
+  return db.query.clusters.findFirst({
+    where: eq(clusters.id, clusterId),
+  });
+}
+
+export type ReEnrichScope = "source" | "window" | "item";
+
+export async function listItemIdsForReEnrich(params: {
+  scope: ReEnrichScope;
+  sourceId?: string;
+  since?: Date;
+  until?: Date;
+  itemId?: string;
+  limit: number;
+}): Promise<string[]> {
+  const lim = Math.min(Math.max(params.limit, 1), 500);
+  const db = getDb();
+  if (params.scope === "item") {
+    if (!params.itemId) return [];
+    const row = await getItemById(params.itemId);
+    return row ? [row.id] : [];
+  }
+
+  const clauses: SQL[] = [];
+  if (params.scope === "source") {
+    if (!params.sourceId) return [];
+    clauses.push(eq(items.sourceId, params.sourceId));
+  }
+  if (params.since) {
+    clauses.push(
+      sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) >= ${params.since.toISOString()}::timestamptz`,
+    );
+  }
+  if (params.until) {
+    clauses.push(
+      sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) <= ${params.until.toISOString()}::timestamptz`,
+    );
+  }
+
+  const rows = await db
+    .select({ id: items.id })
+    .from(items)
+    .where(clauses.length ? and(...clauses) : undefined)
+    .orderBy(desc(items.fetchedAt))
+    .limit(lim);
+  return rows.map((r) => r.id);
+}
+
+export async function listUserLinks(limit = 200) {
+  const db = getDb();
+  return db
+    .select()
+    .from(userLinks)
+    .orderBy(desc(userLinks.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 500));
+}
+
+export async function addUserLink(url: string, note?: string | null) {
+  const db = getDb();
+  const rows = await db
+    .insert(userLinks)
+    .values({ url, note: note ?? null })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function deleteUserLink(id: string) {
+  const db = getDb();
+  const deleted = await db
+    .delete(userLinks)
+    .where(eq(userLinks.id, id))
+    .returning({ id: userLinks.id });
+  return deleted.length > 0;
 }
 
 export async function recordItems(sourceId: string, payload: RecordItemInput[]) {
@@ -332,6 +479,9 @@ export async function upsertItemEnrichment(input: {
   titleZh?: string;
   contentZh?: string;
   tags: string[];
+  categoryDomain?: string[];
+  categoryTopic?: string[];
+  categoryEntity?: string[];
   embedding?: number[];
   clusterId?: string | null;
 }) {
@@ -344,6 +494,9 @@ export async function upsertItemEnrichment(input: {
       titleZh: input.titleZh ?? null,
       contentZh: input.contentZh ?? null,
       tags: input.tags,
+      categoryDomain: input.categoryDomain ?? [],
+      categoryTopic: input.categoryTopic ?? [],
+      categoryEntity: input.categoryEntity ?? [],
       embedding: input.embedding,
       clusterId: input.clusterId ?? null,
       enrichedAt: new Date(),
@@ -355,6 +508,9 @@ export async function upsertItemEnrichment(input: {
         titleZh: input.titleZh ?? null,
         contentZh: input.contentZh ?? null,
         tags: input.tags,
+        categoryDomain: input.categoryDomain ?? [],
+        categoryTopic: input.categoryTopic ?? [],
+        categoryEntity: input.categoryEntity ?? [],
         embedding: input.embedding,
         clusterId: input.clusterId ?? null,
         enrichedAt: new Date(),
@@ -488,40 +644,63 @@ export type ClusterSiblingRow = {
 export async function listClusterSiblingItems(params: {
   clusterId: string;
   excludeItemId?: string;
+  excludeSourceId?: string;
   limit?: number;
 }): Promise<ClusterSiblingRow[]> {
-  const db = getDb();
+  const pg = getSql();
   const limit = Math.min(Math.max(params.limit ?? 30, 1), 100);
-  const whereParts: SQL[] = [eq(itemEnrichments.clusterId, params.clusterId)];
-  if (params.excludeItemId) {
-    whereParts.push(ne(items.id, params.excludeItemId));
-  }
-  const rows = await db
-    .select({
-      itemId: items.id,
-      title: items.title,
-      titleZh: itemEnrichments.titleZh,
-      url: items.url,
-      sourceId: items.sourceId,
-      sourceName: sources.name,
-      platform: sources.kind,
-      sourceConfig: sources.config,
-    })
-    .from(items)
-    .innerJoin(itemEnrichments, eq(items.id, itemEnrichments.itemId))
-    .innerJoin(sources, eq(items.sourceId, sources.id))
-    .where(and(...whereParts))
-    .orderBy(desc(items.fetchedAt), desc(items.id))
-    .limit(limit);
+  const excludeItemFrag = params.excludeItemId ? pg`AND i.id <> ${params.excludeItemId}::uuid` : pg``;
+  const excludeSourceFrag = params.excludeSourceId
+    ? pg`AND i.source_id <> ${params.excludeSourceId}::uuid`
+    : pg``;
+  const rows = await pg<
+    {
+      item_id: string;
+      title: string | null;
+      title_zh: string | null;
+      url: string | null;
+      source_id: string;
+      source_name: string;
+      platform: string;
+      source_config: unknown;
+    }[]
+  >`
+    WITH ranked AS (
+      SELECT
+        i.id AS item_id,
+        i.title,
+        ie.title_zh,
+        i.url,
+        i.source_id,
+        s.name AS source_name,
+        s.kind AS platform,
+        s.config AS source_config,
+        ROW_NUMBER() OVER (
+          PARTITION BY i.source_id
+          ORDER BY COALESCE(i.published_at, i.fetched_at) DESC, i.fetched_at DESC, i.id DESC
+        ) AS rn
+      FROM items i
+      INNER JOIN item_enrichments ie ON ie.item_id = i.id
+      INNER JOIN sources s ON s.id = i.source_id
+      WHERE ie.cluster_id = ${params.clusterId}::uuid
+        ${excludeItemFrag}
+        ${excludeSourceFrag}
+    )
+    SELECT item_id, title, title_zh, url, source_id, source_name, platform, source_config
+    FROM ranked
+    WHERE rn = 1
+    ORDER BY source_name ASC
+    LIMIT ${limit}
+  `;
   return rows.map((r) => ({
-    itemId: r.itemId,
+    itemId: r.item_id,
     title: r.title,
-    titleZh: r.titleZh,
+    titleZh: r.title_zh,
     url: r.url,
-    sourceId: r.sourceId,
-    sourceName: r.sourceName,
+    sourceId: r.source_id,
+    sourceName: r.source_name,
     platform: r.platform,
-    sourceConfig: r.sourceConfig,
+    sourceConfig: r.source_config,
   }));
 }
 
@@ -583,6 +762,9 @@ export type ItemListRow = {
   titleZh: string | null;
   contentZh: string | null;
   tags: string[] | null;
+  categoryDomain: string[] | null;
+  categoryTopic: string[] | null;
+  categoryEntity: string[] | null;
   clusterId: string | null;
   clusterTopic: string | null;
   relatedCount: number | null;
@@ -600,6 +782,7 @@ async function listCuratedItems(params: {
   q?: string;
   tags?: string[];
   favoritedOnly?: boolean;
+  sortBy?: "published" | "fetched";
 }): Promise<ItemListRow[]> {
   const pg = getSql();
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
@@ -613,16 +796,25 @@ async function listCuratedItems(params: {
   const platformFrag = params.platform ? pg`AND sources.kind = ${params.platform}` : pg``;
   const qFrag =
     params.q && qLike
-      ? pg`AND (items.title ILIKE ${qLike} OR items.content_text ILIKE ${qLike})`
+      ? pg`AND (
+          items.title ILIKE ${qLike}
+          OR items.content_text ILIKE ${qLike}
+          OR ie.title_zh ILIKE ${qLike}
+          OR ie.content_zh ILIKE ${qLike}
+        )`
       : pg``;
   const tagsFrag =
     tagsLiteral !== null ? pg`AND ie.tags @> ${tagsLiteral}::text[]` : pg``;
   const favFrag = params.favoritedOnly
     ? pg`AND EXISTS (SELECT 1 FROM favorites f WHERE f.item_id = items.id)`
     : pg``;
-  const beforeFrag = params.before
-    ? pg`AND picked.fetched_at < ${params.before}`
-    : pg``;
+  const sortBy = params.sortBy ?? "published";
+  const beforeFrag =
+    params.before && sortBy === "published"
+      ? pg`AND COALESCE(items.published_at, picked.fetched_at) < ${params.before}`
+      : params.before
+        ? pg`AND picked.fetched_at < ${params.before}`
+        : pg``;
   const sinceFrag = publishedSinceIso
     ? pg`AND COALESCE(items.published_at, items.fetched_at) >= ${publishedSinceIso}::timestamptz`
     : pg``;
@@ -640,6 +832,9 @@ async function listCuratedItems(params: {
     title_zh: string | null;
     content_zh: string | null;
     tags: string[] | null;
+    category_domain: string[] | null;
+    category_topic: string[] | null;
+    category_entity: string[] | null;
     cluster_id: string;
     cluster_topic: string | null;
     related_count: number;
@@ -694,9 +889,17 @@ async function listCuratedItems(params: {
       ie.title_zh,
       ie.content_zh,
       ie.tags,
+      ie.category_domain,
+      ie.category_topic,
+      ie.category_entity,
       picked.cluster_id,
       c.topic AS cluster_topic,
-      c.item_count AS related_count,
+      (
+        SELECT COUNT(DISTINCT i2.source_id)::int
+        FROM item_enrichments ie2
+        INNER JOIN items i2 ON i2.id = ie2.item_id
+        WHERE ie2.cluster_id = picked.cluster_id
+      ) AS related_count,
       items.published_at,
       picked.fetched_at,
       f.created_at AS favorited_at
@@ -708,7 +911,12 @@ async function listCuratedItems(params: {
     LEFT JOIN favorites f ON f.item_id = items.id
     WHERE true
       ${beforeFrag}
-    ORDER BY picked.last_seen_at DESC NULLS LAST, picked.fetched_at DESC NULLS LAST, picked.id DESC
+    ORDER BY
+      ${sortBy === "published"
+        ? pg`COALESCE(items.published_at, picked.fetched_at) DESC NULLS LAST`
+        : pg`picked.fetched_at DESC NULLS LAST`},
+      picked.last_seen_at DESC NULLS LAST,
+      picked.id DESC
     LIMIT ${limit}
   `;
 
@@ -725,6 +933,9 @@ async function listCuratedItems(params: {
     titleZh: r.title_zh,
     contentZh: r.content_zh,
     tags: r.tags,
+    categoryDomain: r.category_domain,
+    categoryTopic: r.category_topic,
+    categoryEntity: r.category_entity,
     clusterId: r.cluster_id,
     clusterTopic: r.cluster_topic,
     relatedCount: r.related_count,
@@ -744,6 +955,7 @@ export async function listItems(params: {
   q?: string;
   tags?: string[];
   favoritedOnly?: boolean;
+  sortBy?: "published" | "fetched";
 }) {
   if (params.feed === "curated") {
     return listCuratedItems(params);
@@ -753,7 +965,14 @@ export async function listItems(params: {
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const publishedSinceIso = params.publishedSince?.toISOString();
   const clauses: SQL[] = [];
-  if (params.before) clauses.push(lt(items.fetchedAt, params.before));
+  const sortBy = params.sortBy ?? "published";
+  if (params.before) {
+    if (sortBy === "published") {
+      clauses.push(sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) < ${params.before.toISOString()}::timestamptz`);
+    } else {
+      clauses.push(lt(items.fetchedAt, params.before));
+    }
+  }
   if (publishedSinceIso) {
     clauses.push(
       sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) >= ${publishedSinceIso}::timestamptz`,
@@ -765,6 +984,8 @@ export async function listItems(params: {
       or(
         ilike(items.title, `%${params.q}%`),
         ilike(items.contentText, `%${params.q}%`),
+        ilike(itemEnrichments.titleZh, `%${params.q}%`),
+        ilike(itemEnrichments.contentZh, `%${params.q}%`),
       )!,
     );
   }
@@ -790,9 +1011,20 @@ export async function listItems(params: {
       titleZh: itemEnrichments.titleZh,
       contentZh: itemEnrichments.contentZh,
       tags: itemEnrichments.tags,
+      categoryDomain: itemEnrichments.categoryDomain,
+      categoryTopic: itemEnrichments.categoryTopic,
+      categoryEntity: itemEnrichments.categoryEntity,
       clusterId: itemEnrichments.clusterId,
       clusterTopic: clusters.topic,
-      relatedCount: clusters.itemCount,
+      relatedCount: sql<number | null>`CASE
+        WHEN ${itemEnrichments.clusterId} IS NULL THEN NULL
+        ELSE (
+          SELECT COUNT(DISTINCT i2.source_id)::int
+          FROM item_enrichments ie2
+          INNER JOIN items i2 ON i2.id = ie2.item_id
+          WHERE ie2.cluster_id = ${itemEnrichments.clusterId}
+        )
+      END`,
       publishedAt: items.publishedAt,
       fetchedAt: items.fetchedAt,
       favoritedAt: favorites.createdAt,
@@ -803,7 +1035,12 @@ export async function listItems(params: {
     .leftJoin(clusters, eq(clusters.id, itemEnrichments.clusterId))
     .leftJoin(favorites, eq(favorites.itemId, items.id))
     .where(clauses.length ? and(...clauses) : undefined)
-    .orderBy(desc(items.fetchedAt))
+    .orderBy(
+      sortBy === "published"
+        ? sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) DESC`
+        : desc(items.fetchedAt),
+      desc(items.fetchedAt),
+    )
     .limit(limit);
 }
 

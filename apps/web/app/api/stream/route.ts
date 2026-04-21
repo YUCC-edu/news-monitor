@@ -1,11 +1,16 @@
+import { logTimelineServer } from "@news/shared";
+import { createLogger } from "@news/shared";
 import { createRedisSseBus } from "@/lib/sse-bus";
 
 export const runtime = "nodejs";
+const log = createLogger("api:stream");
 
 export async function GET(request: Request) {
+  const t0 = Date.now();
   let cleanup: (() => Promise<void>) | null = null;
   const stream = new ReadableStream({
     async start(controller) {
+      log.debug("sse stream start");
       const encoder = new TextEncoder();
       const write = (event: string, data: unknown) => {
         controller.enqueue(
@@ -29,15 +34,27 @@ export async function GET(request: Request) {
         }
         try {
           const parsed = JSON.parse(payload) as { type?: string; [k: string]: unknown };
+          const t = parsed.type;
+          if (t === "item.created") {
+            const it = parsed.item as { id?: string; sourceId?: string; title?: string } | undefined;
+            logTimelineServer("sse", "fanout item.created → browser", {
+              itemId: it?.id,
+              sourceId: it?.sourceId,
+              title: it?.title?.slice(0, 80),
+            });
+          }
           write(parsed.type ?? "message", parsed);
         } catch {
+          log.warn("sse payload parse failed; forwarding raw payload");
           write("message", { type: "message", payload });
         }
       });
       await bus.start();
+      log.info("sse bus started", { latencyMs: Date.now() - t0 });
       cleanup = async () => {
         clearInterval(ping);
         await bus.stop();
+        log.debug("sse bus stopped");
       };
       request.signal.addEventListener("abort", () => {
         void cleanup?.();
@@ -45,6 +62,7 @@ export async function GET(request: Request) {
     },
     async cancel() {
       if (cleanup) await cleanup();
+      log.debug("sse stream cancelled");
     },
   });
 

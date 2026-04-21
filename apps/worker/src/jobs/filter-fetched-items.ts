@@ -2,6 +2,7 @@ import type { NormalizedItem } from "@news/connectors-core";
 
 export type FilterFetchedItemsParams = {
   kind: string;
+  /** Used by rss/wechat relaxation only; not used for hn/x incremental threshold anymore. */
   lastOkAt: Date | null | undefined;
   initialFetchDays: number | null | undefined;
   maxItemAgeDays: number | null | undefined;
@@ -9,12 +10,23 @@ export type FilterFetchedItemsParams = {
   firstFetchMaxAgeDaysDefault: number;
   items: NormalizedItem[];
   now: Date;
+  /**
+   * For hn / x-rsshub: `max(items.published_at)` already stored for this source.
+   * Incremental lower bound is `max(firstThresh, watermark - slack)` so we do not compare
+   * tweet times to wall-clock `lastOkAt` (which broke steady updates after first success).
+   */
+  maxPublishedAtWatermark?: Date | null;
+  /** Subtracted from watermark to avoid duplicate edge inserts; default 5 minutes. */
+  incrementalSlackMs?: number;
 };
+
+const DEFAULT_INCREMENTAL_SLACK_MS = 5 * 60 * 1000;
 
 /**
  * Drop items outside the configured publish-time window.
- * hn / x-rsshub: also apply incremental window from lastOkAt (pub dates near "now").
- * rss / wechat-wewe: use only firstThresh + maxItemAge (pub date is article time, not sync time).
+ * hn / x-rsshub: when `maxPublishedAtWatermark` is set, keep items with publishedAt
+ * not older than max(firstThresh, watermark - slack). When unset, use firstThresh only.
+ * rss / wechat-wewe: firstThresh + maxItemAge only (pub date is article time).
  */
 export function filterFetchedItems(params: FilterFetchedItemsParams): NormalizedItem[] {
   const initDays =
@@ -25,17 +37,21 @@ export function filterFetchedItems(params: FilterFetchedItemsParams): Normalized
       ? new Date(params.now.getTime() - params.maxItemAgeDays * 24 * 3600 * 1000)
       : null;
 
-  const usePubDateIncrementalWindow =
-    params.kind === "hn" || params.kind === "x-rsshub";
-  const lastOk = params.lastOkAt ?? null;
-  const lastOkThresh =
-    lastOk && usePubDateIncrementalWindow
-      ? new Date(lastOk.getTime() - 10 * 60 * 1000)
-      : firstThresh;
+  const isHnOrX = params.kind === "hn" || params.kind === "x-rsshub";
+  const slackMs = params.incrementalSlackMs ?? DEFAULT_INCREMENTAL_SLACK_MS;
+  const wm = params.maxPublishedAtWatermark ?? null;
+
+  let pubThresh: Date;
+  if (isHnOrX && wm) {
+    const fromWatermark = new Date(wm.getTime() - slackMs);
+    pubThresh = fromWatermark > firstThresh ? fromWatermark : firstThresh;
+  } else {
+    pubThresh = firstThresh;
+  }
 
   return params.items.filter((item) => {
     if (!item.publishedAt) return true;
-    if (item.publishedAt < lastOkThresh) return false;
+    if (item.publishedAt < pubThresh) return false;
     if (maxAgeThresh && item.publishedAt < maxAgeThresh) return false;
     return true;
   });

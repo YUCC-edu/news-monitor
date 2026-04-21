@@ -1,4 +1,9 @@
-import { CONTROLLED_TAGS, detectLangSimple, isControlledTag } from "@news/shared";
+import {
+  CONTROLLED_TAGS,
+  deriveTaxonomy,
+  detectLangSimple,
+  isControlledTag,
+} from "@news/shared";
 import { z } from "zod";
 import { getLlmClient, type LlmClient } from "./llm-client";
 
@@ -7,6 +12,9 @@ const OutputSchema = z.object({
   title_zh: z.string().optional(),
   content_zh: z.string().optional(),
   tags: z.array(z.string()).default([]),
+  category_domain: z.array(z.string()).optional(),
+  category_topic: z.array(z.string()).optional(),
+  category_entity: z.array(z.string()).optional(),
 });
 
 export type TranslateTagInput = {
@@ -19,6 +27,9 @@ export type TranslateTagOutput = {
   titleZh?: string;
   contentZh?: string;
   tags: string[];
+  categoryDomain: string[];
+  categoryTopic: string[];
+  categoryEntity: string[];
 };
 
 function clampTags(tags: string[]) {
@@ -39,7 +50,7 @@ export async function translateAndTag(
 
   const system = [
     "You are an AI news enrichment assistant.",
-    "Return strictly JSON with keys: lang, title_zh, content_zh, tags.",
+    "Return strictly JSON with keys: lang, title_zh, content_zh, tags, category_domain, category_topic, category_entity.",
     `Prefer tags from controlled list: ${CONTROLLED_TAGS.join(", ")}`,
     "You may add at most 2 free-form tags.",
   ].join("\n");
@@ -57,11 +68,22 @@ export async function translateAndTag(
 
   const raw = await client.chatJson({ system, user });
   const parsed = OutputSchema.parse(JSON.parse(raw));
+  const categories = deriveTaxonomy({
+    title: title,
+    content: content,
+    tags: parsed.tags,
+    llmDomain: parsed.category_domain,
+    llmTopic: parsed.category_topic,
+    llmEntity: parsed.category_entity,
+  });
 
   return {
     lang: parsed.lang,
     titleZh: parsed.title_zh,
     contentZh: parsed.content_zh,
     tags: clampTags(parsed.tags),
+    categoryDomain: categories.domain,
+    categoryTopic: categories.topic,
+    categoryEntity: categories.entity,
   };
 }
