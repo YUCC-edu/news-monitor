@@ -368,6 +368,17 @@ export async function getClusterById(clusterId: string) {
   });
 }
 
+export async function getClusterDistinctSourceCount(clusterId: string) {
+  const sqlClient = getSql();
+  const [row] = await sqlClient<{ count: number }[]>`
+    SELECT COUNT(DISTINCT i.source_id)::int AS count
+    FROM item_enrichments ie
+    INNER JOIN items i ON i.id = ie.item_id
+    WHERE ie.cluster_id = ${clusterId}::uuid
+  `;
+  return row?.count ?? 0;
+}
+
 export type ReEnrichScope = "source" | "window" | "item";
 
 export async function listItemIdsForReEnrich(params: {
@@ -749,6 +760,33 @@ export async function getClusterRecentTitles(clusterId: string, limit = 5) {
   return rows.map((row) => row.titleZh ?? row.title ?? "").filter(Boolean);
 }
 
+export async function getClusterNamingContext(clusterId: string, limit = 8) {
+  const sqlClient = getSql();
+  const rows = await sqlClient<
+    { title: string | null; title_zh: string | null; tags: string[] | null; entities: string[] | null }[]
+  >`
+    SELECT
+      i.title,
+      ie.title_zh,
+      ie.tags,
+      ie.category_entity AS entities
+    FROM item_enrichments ie
+    INNER JOIN items i ON i.id = ie.item_id
+    WHERE ie.cluster_id = ${clusterId}::uuid
+    ORDER BY ie.enriched_at DESC
+    LIMIT ${Math.min(Math.max(limit, 3), 20)}
+  `;
+  const titles = rows
+    .map((r) => (r.title_zh ?? r.title ?? "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+  const tags = [...new Set(rows.flatMap((r) => r.tags ?? []).map((x) => x.trim()).filter(Boolean))].slice(0, 8);
+  const entities = [
+    ...new Set(rows.flatMap((r) => r.entities ?? []).map((x) => x.trim()).filter(Boolean)),
+  ].slice(0, 8);
+  return { titles, tags, entities };
+}
+
 export type ItemListRow = {
   id: string;
   sourceId: string;
@@ -768,6 +806,8 @@ export type ItemListRow = {
   clusterId: string | null;
   clusterTopic: string | null;
   relatedCount: number | null;
+  relatedSourceCount: number | null;
+  clusterItemCount: number | null;
   publishedAt: Date | null;
   fetchedAt: Date;
   favoritedAt: Date | null;
@@ -785,6 +825,10 @@ async function listCuratedItems(params: {
   sortBy?: "published" | "fetched";
 }): Promise<ItemListRow[]> {
   const pg = getSql();
+  const curatedMinClusterSize = Math.max(
+    1,
+    Number.parseInt(process.env.CURATED_MIN_CLUSTER_SIZE ?? "2", 10) || 2,
+  );
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const publishedSinceIso = params.publishedSince?.toISOString();
   const qLike = params.q ? `%${params.q}%` : null;
@@ -838,6 +882,7 @@ async function listCuratedItems(params: {
     cluster_id: string;
     cluster_topic: string | null;
     related_count: number;
+    cluster_item_count: number;
     published_at: Date | null;
     fetched_at: Date;
     favorited_at: Date | null;
@@ -856,7 +901,7 @@ async function listCuratedItems(params: {
       FROM items
       INNER JOIN sources ON sources.id = items.source_id
       INNER JOIN item_enrichments ie ON ie.item_id = items.id AND ie.cluster_id IS NOT NULL
-      INNER JOIN clusters c ON c.id = ie.cluster_id AND c.item_count >= 2
+      INNER JOIN clusters c ON c.id = ie.cluster_id AND c.item_count >= ${curatedMinClusterSize}
       WHERE true
         ${platformFrag}
         ${qFrag}
@@ -900,6 +945,7 @@ async function listCuratedItems(params: {
         INNER JOIN items i2 ON i2.id = ie2.item_id
         WHERE ie2.cluster_id = picked.cluster_id
       ) AS related_count,
+      c.item_count AS cluster_item_count,
       items.published_at,
       picked.fetched_at,
       f.created_at AS favorited_at
@@ -939,6 +985,8 @@ async function listCuratedItems(params: {
     clusterId: r.cluster_id,
     clusterTopic: r.cluster_topic,
     relatedCount: r.related_count,
+    relatedSourceCount: r.related_count,
+    clusterItemCount: r.cluster_item_count,
     publishedAt: r.published_at,
     fetchedAt: r.fetched_at,
     favoritedAt: r.favorited_at,
@@ -956,6 +1004,7 @@ export async function listItems(params: {
   tags?: string[];
   favoritedOnly?: boolean;
   sortBy?: "published" | "fetched";
+  taxonomyOnly?: boolean;
 }) {
   if (params.feed === "curated") {
     return listCuratedItems(params);
@@ -996,6 +1045,16 @@ export async function listItems(params: {
   if (params.favoritedOnly) {
     clauses.push(sql`EXISTS (SELECT 1 FROM favorites f WHERE f.item_id = ${items.id})`);
   }
+  if (params.taxonomyOnly) {
+    clauses.push(sql`${itemEnrichments.itemId} IS NOT NULL`);
+    clauses.push(
+      sql`(
+        array_length(${itemEnrichments.categoryDomain}, 1) > 0
+        OR array_length(${itemEnrichments.categoryTopic}, 1) > 0
+        OR array_length(${itemEnrichments.categoryEntity}, 1) > 0
+      )`,
+    );
+  }
 
   return db
     .select({
@@ -1025,6 +1084,16 @@ export async function listItems(params: {
           WHERE ie2.cluster_id = ${itemEnrichments.clusterId}
         )
       END`,
+      relatedSourceCount: sql<number | null>`CASE
+        WHEN ${itemEnrichments.clusterId} IS NULL THEN NULL
+        ELSE (
+          SELECT COUNT(DISTINCT i2.source_id)::int
+          FROM item_enrichments ie2
+          INNER JOIN items i2 ON i2.id = ie2.item_id
+          WHERE ie2.cluster_id = ${itemEnrichments.clusterId}
+        )
+      END`,
+      clusterItemCount: clusters.itemCount,
       publishedAt: items.publishedAt,
       fetchedAt: items.fetchedAt,
       favoritedAt: favorites.createdAt,
@@ -1171,8 +1240,103 @@ export async function deleteKeywordRule(id: string) {
   return rows.length > 0;
 }
 
-export async function getStatsOverview() {
+export type StatsRange = "7d" | "30d" | "90d" | "custom";
+export type StatsClusterSort = "hybrid" | "sources" | "items" | "recency" | "cohesion";
+
+function safeEnvWeight(name: string, fallback: number) {
+  const parsed = Number.parseFloat(process.env[name] ?? "");
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeWeights(raw: {
+  sources: number;
+  items: number;
+  recency: number;
+  cohesion: number;
+}) {
+  const clamped = {
+    sources: Math.max(0, raw.sources),
+    items: Math.max(0, raw.items),
+    recency: Math.max(0, raw.recency),
+    cohesion: Math.max(0, raw.cohesion),
+  };
+  const sum = clamped.sources + clamped.items + clamped.recency + clamped.cohesion;
+  if (sum <= 0) return { sources: 0.4, items: 0.3, recency: 0.2, cohesion: 0.1 };
+  return {
+    sources: clamped.sources / sum,
+    items: clamped.items / sum,
+    recency: clamped.recency / sum,
+    cohesion: clamped.cohesion / sum,
+  };
+}
+
+export async function getStatsOverview(params?: {
+  range?: StatsRange;
+  platform?: string;
+  tag?: string;
+  compare?: boolean;
+  topN?: number;
+  minSources?: number;
+  clusterSort?: StatsClusterSort;
+  from?: Date;
+  to?: Date;
+}) {
   const sqlClient = getSql();
+  const range = params?.range ?? "7d";
+  const fallbackDays = range === "30d" ? 30 : range === "90d" ? 90 : 7;
+  const endAt = params?.to ?? new Date();
+  const startAt =
+    params?.from ??
+    new Date(endAt.getTime() - fallbackDays * 24 * 3600 * 1000);
+  const compareDurationMs = Math.max(
+    1,
+    endAt.getTime() - startAt.getTime(),
+  );
+  const prevEndAt = new Date(startAt.getTime());
+  const prevStartAt = new Date(startAt.getTime() - compareDurationMs);
+  const compare = params?.compare ?? false;
+  const topN = Math.min(Math.max(params?.topN ?? 10, 3), 30);
+  const minSources = Math.min(Math.max(params?.minSources ?? 2, 1), 20);
+  const clusterSort = params?.clusterSort ?? "hybrid";
+  const weights = normalizeWeights({
+    sources: safeEnvWeight("CLUSTER_SCORE_W_SOURCES", 0.4),
+    items: safeEnvWeight("CLUSTER_SCORE_W_ITEMS", 0.3),
+    recency: safeEnvWeight("CLUSTER_SCORE_W_RECENCY", 0.2),
+    cohesion: safeEnvWeight("CLUSTER_SCORE_W_COHESION", 0.1),
+  });
+
+  const platformFrag = params?.platform
+    ? sqlClient`AND s.kind = ${params.platform}`
+    : sqlClient``;
+  const tagFrag = params?.tag
+    ? sqlClient`AND ie.tags @> ${`{"${params.tag.replace(/"/g, '\\"')}"}`}::text[]`
+    : sqlClient``;
+  const compareFrag = compare
+    ? sqlClient`
+      (SELECT count(*)::int FROM items WHERE fetched_at >= ${prevStartAt.toISOString()}::timestamptz AND fetched_at < ${prevEndAt.toISOString()}::timestamptz) AS items_prev_window,
+      (SELECT count(*)::int FROM sources WHERE last_ok_at >= ${prevStartAt.toISOString()}::timestamptz AND last_ok_at < ${prevEndAt.toISOString()}::timestamptz) AS active_sources_prev_window,
+      (
+        SELECT count(*)::int
+        FROM (
+          SELECT ie.cluster_id
+          FROM items i
+          INNER JOIN item_enrichments ie ON ie.item_id = i.id
+          INNER JOIN sources s ON s.id = i.source_id
+          WHERE i.fetched_at >= ${prevStartAt.toISOString()}::timestamptz
+            AND i.fetched_at < ${prevEndAt.toISOString()}::timestamptz
+            AND ie.cluster_id IS NOT NULL
+            ${platformFrag}
+            ${tagFrag}
+          GROUP BY ie.cluster_id
+          HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+        ) prev_clusters
+      ) AS clusters_prev_window
+    `
+    : sqlClient`
+      0::int AS items_prev_window,
+      0::int AS active_sources_prev_window,
+      0::int AS clusters_prev_window
+    `;
 
   const [totals] = await sqlClient<
     {
@@ -1181,6 +1345,12 @@ export async function getStatsOverview() {
       total_sources: number;
       active_sources: number;
       total_clusters: number;
+      items_window: number;
+      active_sources_window: number;
+      clusters_window: number;
+      items_prev_window: number;
+      active_sources_prev_window: number;
+      clusters_prev_window: number;
     }[]
   >`
     SELECT
@@ -1188,49 +1358,288 @@ export async function getStatsOverview() {
       (SELECT count(*)::int FROM items WHERE fetched_at > now() - interval '24 hours') AS items_24h,
       (SELECT count(*)::int FROM sources) AS total_sources,
       (SELECT count(*)::int FROM sources WHERE last_ok_at > now() - interval '7 days') AS active_sources,
-      (SELECT count(*)::int FROM clusters) AS total_clusters
+      (SELECT count(*)::int FROM clusters) AS total_clusters,
+      (SELECT count(*)::int FROM items WHERE fetched_at >= ${startAt.toISOString()}::timestamptz AND fetched_at < ${endAt.toISOString()}::timestamptz) AS items_window,
+      (SELECT count(*)::int FROM sources WHERE last_ok_at >= ${startAt.toISOString()}::timestamptz AND last_ok_at < ${endAt.toISOString()}::timestamptz) AS active_sources_window,
+      (
+        SELECT count(*)::int
+        FROM (
+          SELECT ie.cluster_id
+          FROM items i
+          INNER JOIN item_enrichments ie ON ie.item_id = i.id
+          INNER JOIN sources s ON s.id = i.source_id
+          WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+            AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+            AND ie.cluster_id IS NOT NULL
+            ${platformFrag}
+            ${tagFrag}
+          GROUP BY ie.cluster_id
+          HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+        ) clusters_filtered
+      ) AS clusters_window,
+      ${compareFrag}
   `;
 
   const byPlatform = await sqlClient<{ kind: string; count: number }[]>`
     SELECT s.kind, count(*)::int AS count
     FROM items i
     JOIN sources s ON s.id = i.source_id
-    WHERE i.fetched_at > now() - interval '7 days'
+    LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+    WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+      AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+      ${platformFrag}
+      ${tagFrag}
     GROUP BY s.kind
     ORDER BY count DESC
   `;
 
   const topTags = await sqlClient<{ tag: string; count: number }[]>`
-    SELECT unnest(tags) AS tag, count(*)::int AS count
-    FROM item_enrichments
-    WHERE enriched_at > now() - interval '7 days'
+    SELECT unnest(ie.tags) AS tag, count(*)::int AS count
+    FROM item_enrichments ie
+    INNER JOIN items i ON i.id = ie.item_id
+    INNER JOIN sources s ON s.id = i.source_id
+    WHERE ie.enriched_at >= ${startAt.toISOString()}::timestamptz
+      AND ie.enriched_at < ${endAt.toISOString()}::timestamptz
+      ${platformFrag}
+      ${tagFrag}
     GROUP BY tag
     ORDER BY count DESC
-    LIMIT 10
+    LIMIT ${topN}
   `;
+
+  const scoreOrder =
+    clusterSort === "sources"
+      ? sqlClient`distinct_sources DESC, items_window DESC, recency_score DESC`
+      : clusterSort === "items"
+        ? sqlClient`items_window DESC, distinct_sources DESC, recency_score DESC`
+        : clusterSort === "recency"
+          ? sqlClient`recency_score DESC, distinct_sources DESC, items_window DESC`
+          : clusterSort === "cohesion"
+            ? sqlClient`cohesion_score DESC, distinct_sources DESC, items_window DESC`
+            : sqlClient`hybrid_score DESC, distinct_sources DESC, items_window DESC`;
 
   const topClusters = await sqlClient<{
     id: string;
     topic: string | null;
     item_count: number;
     last_seen_at: Date;
+    distinct_sources: number;
+    items_window: number;
+    recency_score: number;
+    cohesion_score: number;
+    hybrid_score: number;
   }[]>`
-    SELECT id, topic, item_count, last_seen_at
-    FROM clusters
-    WHERE last_seen_at > now() - interval '7 days'
-      AND item_count > 1
-    ORDER BY item_count DESC, last_seen_at DESC
-    LIMIT 10
+    WITH cluster_stats AS (
+      SELECT
+        c.id,
+        c.topic,
+        c.item_count,
+        c.last_seen_at,
+        COUNT(*)::int AS items_window,
+        COUNT(DISTINCT i.source_id)::int AS distinct_sources,
+        MAX(i.fetched_at) AS latest_item_at,
+        AVG(
+          CASE
+            WHEN c.centroid_embedding IS NULL OR ie.embedding IS NULL THEN NULL
+            ELSE (1 - (ie.embedding <=> c.centroid_embedding))
+          END
+        )::float AS cohesion_score
+      FROM clusters c
+      INNER JOIN item_enrichments ie ON ie.cluster_id = c.id
+      INNER JOIN items i ON i.id = ie.item_id
+      INNER JOIN sources s ON s.id = i.source_id
+      WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+        AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+        ${platformFrag}
+        ${tagFrag}
+      GROUP BY c.id, c.topic, c.item_count, c.last_seen_at
+      HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+    ),
+    maxv AS (
+      SELECT
+        GREATEST(MAX(cs.distinct_sources), 1)::float AS max_sources,
+        GREATEST(MAX(cs.items_window), 1)::float AS max_items
+      FROM cluster_stats cs
+    )
+    SELECT
+      cs.id,
+      cs.topic,
+      cs.item_count,
+      cs.last_seen_at,
+      cs.distinct_sources,
+      cs.items_window,
+      EXP(-GREATEST(EXTRACT(EPOCH FROM (now() - COALESCE(cs.latest_item_at, cs.last_seen_at))) / 3600.0, 0) / 48.0)::float AS recency_score,
+      COALESCE(cs.cohesion_score, 0.5)::float AS cohesion_score,
+      (
+        ${weights.sources} * (cs.distinct_sources / maxv.max_sources)
+        + ${weights.items} * (cs.items_window / maxv.max_items)
+        + ${weights.recency} * EXP(-GREATEST(EXTRACT(EPOCH FROM (now() - COALESCE(cs.latest_item_at, cs.last_seen_at))) / 3600.0, 0) / 48.0)
+        + ${weights.cohesion} * COALESCE(cs.cohesion_score, 0.5)
+      )::float AS hybrid_score
+    FROM cluster_stats cs
+    CROSS JOIN maxv
+    ORDER BY ${scoreOrder}
+    LIMIT ${topN}
   `;
 
+  const trend = await sqlClient<{
+    day: Date;
+    items_count: number;
+    active_sources_count: number;
+    clusters_count: number;
+    hotspot_index: number;
+  }[]>`
+    WITH day_items AS (
+      SELECT
+        date_trunc('day', i.fetched_at) AS day,
+        count(*)::int AS items_count,
+        count(DISTINCT i.source_id)::int AS active_sources_count
+      FROM items i
+      INNER JOIN sources s ON s.id = i.source_id
+      LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+      WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+        AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+        ${platformFrag}
+        ${tagFrag}
+      GROUP BY day
+    ),
+    day_clusters AS (
+      WITH day_cluster_sources AS (
+        SELECT
+          date_trunc('day', i.fetched_at) AS day,
+          ie.cluster_id,
+          count(DISTINCT i.source_id)::int AS distinct_sources
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+        WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+          AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+          AND ie.cluster_id IS NOT NULL
+          ${platformFrag}
+          ${tagFrag}
+        GROUP BY day, ie.cluster_id
+      )
+      SELECT
+        day,
+        count(*)::int AS clusters_count
+      FROM day_cluster_sources
+      WHERE distinct_sources >= ${minSources}
+      GROUP BY day
+    ),
+    day_hotspots AS (
+      WITH cluster_day AS (
+        SELECT
+          date_trunc('day', i.fetched_at) AS day,
+          ie.cluster_id,
+          count(*)::int AS items_window,
+          count(DISTINCT i.source_id)::int AS distinct_sources,
+          max(i.fetched_at) AS latest_item_at
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        INNER JOIN item_enrichments ie ON ie.item_id = i.id
+        WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+          AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+          AND ie.cluster_id IS NOT NULL
+          ${platformFrag}
+          ${tagFrag}
+        GROUP BY day, ie.cluster_id
+      ),
+      cluster_day_max AS (
+        SELECT
+          day,
+          GREATEST(MAX(distinct_sources), 1)::float AS max_sources,
+          GREATEST(MAX(items_window), 1)::float AS max_items
+        FROM cluster_day
+        WHERE distinct_sources >= ${minSources}
+        GROUP BY day
+      )
+      SELECT
+        cd.day,
+        SUM(
+          ${weights.sources} * (cd.distinct_sources / cdm.max_sources)
+          + ${weights.items} * (cd.items_window / cdm.max_items)
+          + ${weights.recency} * EXP(-GREATEST(EXTRACT(EPOCH FROM (now() - cd.latest_item_at)) / 3600.0, 0) / 48.0)
+        )::float AS hotspot_index
+      FROM cluster_day cd
+      INNER JOIN cluster_day_max cdm ON cdm.day = cd.day
+      WHERE cd.distinct_sources >= ${minSources}
+      GROUP BY cd.day
+    )
+    SELECT
+      di.day,
+      di.items_count,
+      di.active_sources_count,
+      COALESCE(dc.clusters_count, 0)::int AS clusters_count,
+      COALESCE(dh.hotspot_index, 0)::float AS hotspot_index
+    FROM day_items di
+    LEFT JOIN day_clusters dc ON dc.day = di.day
+    LEFT JOIN day_hotspots dh ON dh.day = di.day
+    ORDER BY di.day ASC
+  `;
+
+  const [clusterQuality] = await sqlClient<{
+    total_clusters_window: number;
+    cross_source_clusters_window: number;
+    two_source_clusters_window: number;
+    min_source_clusters_window: number;
+  }[]>`
+    WITH cluster_stats AS (
+      SELECT
+        ie.cluster_id,
+        count(DISTINCT i.source_id)::int AS distinct_sources
+      FROM items i
+      INNER JOIN sources s ON s.id = i.source_id
+      INNER JOIN item_enrichments ie ON ie.item_id = i.id
+      WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+        AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+        AND ie.cluster_id IS NOT NULL
+        ${platformFrag}
+        ${tagFrag}
+      GROUP BY ie.cluster_id
+    )
+    SELECT
+      count(*)::int AS total_clusters_window,
+      count(*) FILTER (WHERE distinct_sources >= 2)::int AS cross_source_clusters_window
+      ,
+      count(*) FILTER (WHERE distinct_sources = 2)::int AS two_source_clusters_window,
+      count(*) FILTER (WHERE distinct_sources >= ${minSources})::int AS min_source_clusters_window
+    FROM cluster_stats
+  `;
+
+  const safeTotals = totals ?? {
+    total_items: 0,
+    items_24h: 0,
+    total_sources: 0,
+    active_sources: 0,
+    total_clusters: 0,
+    items_window: 0,
+    active_sources_window: 0,
+    clusters_window: 0,
+    items_prev_window: 0,
+    active_sources_prev_window: 0,
+    clusters_prev_window: 0,
+  };
+  const delta = {
+    items: compare ? safeTotals.items_window - safeTotals.items_prev_window : null,
+    activeSources: compare
+      ? safeTotals.active_sources_window - safeTotals.active_sources_prev_window
+      : null,
+    clusters: compare ? safeTotals.clusters_window - safeTotals.clusters_prev_window : null,
+  };
+
   return {
-    totals: totals ?? {
-      total_items: 0,
-      items_24h: 0,
-      total_sources: 0,
-      active_sources: 0,
-      total_clusters: 0,
+    range,
+    filters: {
+      platform: params?.platform ?? null,
+      tag: params?.tag ?? null,
+      compare,
+      minSources,
+      clusterSort,
+      from: startAt,
+      to: endAt,
     },
+    totals: safeTotals,
+    delta,
     byPlatform,
     topTags,
     topClusters: topClusters.map((c) => ({
@@ -1238,7 +1647,37 @@ export async function getStatsOverview() {
       topic: c.topic,
       itemCount: c.item_count,
       lastSeenAt: c.last_seen_at,
+      distinctSources: c.distinct_sources,
+      itemsWindow: c.items_window,
+      recencyScore: c.recency_score,
+      cohesionScore: c.cohesion_score,
+      hybridScore: c.hybrid_score,
     })),
+    trend: trend.map((row) => ({
+      day: row.day,
+      items: row.items_count,
+      activeSources: row.active_sources_count,
+      clusters: row.clusters_count,
+      hotspotIndex: row.hotspot_index,
+    })),
+    hotspot: {
+      hotspotIndex: Number(topClusters.reduce((acc, c) => acc + c.hybrid_score, 0).toFixed(4)),
+      totalClustersWindow: clusterQuality?.total_clusters_window ?? 0,
+      crossSourceClustersWindow: clusterQuality?.cross_source_clusters_window ?? 0,
+      crossSourceClusterRate:
+        (clusterQuality?.total_clusters_window ?? 0) > 0
+          ? (clusterQuality!.cross_source_clusters_window / clusterQuality!.total_clusters_window)
+          : 0,
+      weights,
+      diagnostics: {
+        twoSourceClustersWindow: clusterQuality?.two_source_clusters_window ?? 0,
+        twoSourceClusterRate:
+          (clusterQuality?.total_clusters_window ?? 0) > 0
+            ? (clusterQuality!.two_source_clusters_window / clusterQuality!.total_clusters_window)
+            : 0,
+        minSourceClustersWindow: clusterQuality?.min_source_clusters_window ?? 0,
+      },
+    },
   };
 }
 

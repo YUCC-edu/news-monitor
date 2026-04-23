@@ -1,4 +1,5 @@
 import { listItems } from "@news/db";
+import { deriveTaxonomyWithMeta } from "@news/shared";
 import { NextResponse } from "next/server";
 
 function publishedSinceFromRange(range: string | null): Date | undefined {
@@ -37,6 +38,9 @@ export async function GET(request: Request) {
   const range = url.searchParams.get("range");
   const sortRaw = url.searchParams.get("sort");
   const sortBy = sortRaw === "fetched" ? "fetched" : "published";
+  const taxonomyOnly =
+    url.searchParams.get("taxonomyOnly") === "1" ||
+    url.searchParams.get("taxonomyOnly") === "true";
   const publishedSince = publishedSinceFromRange(range);
   const rows = await listItems({
     feed,
@@ -47,6 +51,24 @@ export async function GET(request: Request) {
     limit,
     tags,
     sortBy,
+    taxonomyOnly,
   });
-  return NextResponse.json(rows);
+  const withMeta = rows.map((row) => {
+    const tax = deriveTaxonomyWithMeta({
+      title: row.titleZh ?? row.title,
+      content: row.contentZh ?? row.contentText,
+      tags: row.tags ?? [],
+      llmDomain: row.categoryDomain ?? [],
+      llmTopic: row.categoryTopic ?? [],
+      llmEntity: row.categoryEntity ?? [],
+    });
+    return {
+      ...row,
+      categoryMeta: {
+        confidence: tax.confidence,
+        source: tax.source,
+      },
+    };
+  });
+  return NextResponse.json(withMeta);
 }

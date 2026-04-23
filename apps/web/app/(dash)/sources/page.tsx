@@ -49,6 +49,41 @@ type RecentItem = {
   fetchedAt: string;
 };
 
+type PresetImportResult = {
+  requestedCount?: number;
+  importedFrom?: "manual-selection" | "preset-all";
+  createdCount: number;
+  conflictCount: number;
+  failedCount: number;
+  created: Array<{ id: string; name: string; kind: SourceKind }>;
+  conflicts: Array<{ id: string; name: string; kind: SourceKind }>;
+  failed: Array<{ name: string; reason: string }>;
+};
+
+type SourcePresetCategory = "hotspot" | "research" | "nursing" | "evidence" | "policy";
+
+type PresetItem = {
+  id: string;
+  name: string;
+  description?: string;
+  kind: SourceKind;
+  config: Record<string, unknown>;
+  fetchIntervalSec: number;
+  initialFetchDays?: number | null;
+  maxItemAgeDays?: number | null;
+  category: SourcePresetCategory;
+  tags?: string[];
+  priority?: number;
+};
+
+type PresetPack = {
+  key: string;
+  label: string;
+  description: string;
+  itemCount: number;
+  items: PresetItem[];
+};
+
 export default function SourcesPage() {
   const toast = useToast();
   const [rows, setRows] = useState<SourceRow[]>([]);
@@ -67,6 +102,16 @@ export default function SourcesPage() {
   const [weweAccountName, setWeweAccountName] = useState("");
   const [dedupHint, setDedupHint] = useState<SourceRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [importingPreset, setImportingPreset] = useState(false);
+  const [lastImportResult, setLastImportResult] = useState<PresetImportResult | null>(null);
+  const [importResultOpen, setImportResultOpen] = useState(false);
+  const [presetCenterOpen, setPresetCenterOpen] = useState(false);
+  const [presetCatalogLoading, setPresetCatalogLoading] = useState(false);
+  const [presetPacks, setPresetPacks] = useState<PresetPack[]>([]);
+  const [presetPackFilter, setPresetPackFilter] = useState<string[]>([]);
+  const [presetCategoryFilter, setPresetCategoryFilter] = useState<"all" | SourcePresetCategory>("all");
+  const [presetSearch, setPresetSearch] = useState("");
+  const [presetChecked, setPresetChecked] = useState<Record<string, boolean>>({});
   const [conflictOpen, setConflictOpen] = useState(false);
   const [conflictExisting, setConflictExisting] = useState<SourceRow | null>(null);
   const [dupOpen, setDupOpen] = useState(false);
@@ -157,6 +202,113 @@ export default function SourcesPage() {
       await load();
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function importPresetSources() {
+    setImportingPreset(true);
+    try {
+      const res = await fetch("/api/sources/import-presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ presetKey: "ai-hotspot-research", enabled: true }),
+      });
+      const data = await readJsonResponse<PresetImportResult>(res, "/api/sources/import-presets");
+      setLastImportResult(data);
+      setImportResultOpen(true);
+      toast(
+        `预设导入完成：新增 ${data.createdCount}，已存在 ${data.conflictCount}，失败 ${data.failedCount}`,
+      );
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingPreset(false);
+    }
+  }
+
+  async function loadPresetCatalog() {
+    setPresetCatalogLoading(true);
+    try {
+      const res = await fetch("/api/sources/import-presets");
+      const data = await readJsonResponse<{ packs: PresetPack[] }>(res, "/api/sources/import-presets");
+      const packs = Array.isArray(data.packs) ? data.packs : [];
+      setPresetPacks(packs);
+      if (presetPackFilter.length === 0) {
+        setPresetPackFilter(packs.map((x) => x.key));
+      }
+      const nextChecked: Record<string, boolean> = {};
+      for (const pack of packs) {
+        for (const item of pack.items) {
+          nextChecked[`${pack.key}:${item.id}`] = true;
+        }
+      }
+      setPresetChecked(nextChecked);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetCatalogLoading(false);
+    }
+  }
+
+  const presetList = useMemo(() => {
+    const q = presetSearch.trim().toLowerCase();
+    const activePack = new Set(presetPackFilter);
+    const out: Array<{ key: string; packKey: string; packLabel: string; item: PresetItem }> = [];
+    for (const pack of presetPacks) {
+      if (activePack.size > 0 && !activePack.has(pack.key)) continue;
+      for (const item of pack.items) {
+        if (presetCategoryFilter !== "all" && item.category !== presetCategoryFilter) continue;
+        if (q) {
+          const haystack = [item.name, item.description ?? "", item.category, ...(item.tags ?? [])]
+            .join(" ")
+            .toLowerCase();
+          if (!haystack.includes(q)) continue;
+        }
+        out.push({
+          key: `${pack.key}:${item.id}`,
+          packKey: pack.key,
+          packLabel: pack.label,
+          item,
+        });
+      }
+    }
+    return out.sort((a, b) => (b.item.priority ?? 0) - (a.item.priority ?? 0));
+  }, [presetPacks, presetPackFilter, presetCategoryFilter, presetSearch]);
+
+  const selectedPresetItems = useMemo(() => {
+    const picked = new Set(Object.entries(presetChecked).filter(([, on]) => on).map(([k]) => k));
+    return presetList.filter((row) => picked.has(row.key));
+  }, [presetChecked, presetList]);
+
+  async function importSelectedPresetItems() {
+    if (selectedPresetItems.length === 0) {
+      toast("请先选择至少一个预设信源");
+      return;
+    }
+    setImportingPreset(true);
+    try {
+      const res = await fetch("/api/sources/import-presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: true,
+          presetKeys: presetPackFilter,
+          selectedItems: selectedPresetItems.map((x) => x.item),
+        }),
+      });
+      const data = await readJsonResponse<PresetImportResult>(res, "/api/sources/import-presets");
+      setLastImportResult(data);
+      setImportResultOpen(true);
+      setPresetCenterOpen(false);
+      toast(
+        `导入完成：请求 ${data.requestedCount ?? selectedPresetItems.length}，新增 ${data.createdCount}，冲突 ${data.conflictCount}，失败 ${data.failedCount}`,
+      );
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImportingPreset(false);
     }
   }
 
@@ -396,9 +548,35 @@ export default function SourcesPage() {
               </Button>
             </div>
           ) : null}
-          <Button disabled={submitting} variant="primary" onClick={() => void addSource()}>
-            {submitting ? "创建中..." : "新增信源"}
-          </Button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button
+              disabled={importingPreset}
+              variant="ghost"
+              onClick={() => void importPresetSources()}
+            >
+              {importingPreset ? "导入中..." : "导入 AI 热点+科研预设"}
+            </Button>
+            <Button
+              disabled={importingPreset}
+              variant="ghost"
+              onClick={() => {
+                setPresetCenterOpen(true);
+                if (presetPacks.length === 0) void loadPresetCatalog();
+              }}
+            >
+              选择导入预设（推荐）
+            </Button>
+            <Button
+              disabled={!lastImportResult}
+              variant="ghost"
+              onClick={() => setImportResultOpen(true)}
+            >
+              查看最近导入结果
+            </Button>
+            <Button disabled={submitting} variant="primary" onClick={() => void addSource()}>
+              {submitting ? "创建中..." : "新增信源"}
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -528,6 +706,155 @@ export default function SourcesPage() {
         </div>
       </Dialog>
 
+      <Dialog open={presetCenterOpen} onClose={() => setPresetCenterOpen(false)} title="预设导入中心">
+        <div style={{ display: "grid", gap: 12, maxHeight: "72vh", overflow: "auto" }}>
+          <div style={{ color: "var(--fg-2)", fontSize: 12 }}>
+            可按预设包、类别和关键词筛选，再导入你需要的信源。
+          </div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {presetPacks.map((pack) => {
+                const active = presetPackFilter.includes(pack.key);
+                return (
+                  <button
+                    key={pack.key}
+                    type="button"
+                    onClick={() =>
+                      setPresetPackFilter((prev) =>
+                        prev.includes(pack.key)
+                          ? prev.filter((x) => x !== pack.key)
+                          : [...prev, pack.key],
+                      )
+                    }
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      fontSize: 12,
+                      background: active ? "var(--bg-0)" : "var(--bg-1)",
+                      color: active ? "var(--fg-0)" : "var(--fg-2)",
+                      cursor: "pointer",
+                    }}
+                    title={pack.description}
+                  >
+                    {pack.label}（{pack.itemCount}）
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <Select
+                value={presetCategoryFilter}
+                onChange={(e) => setPresetCategoryFilter(e.target.value as "all" | SourcePresetCategory)}
+                style={{ maxWidth: 180 }}
+              >
+                <option value="all">全部类别</option>
+                <option value="hotspot">热点</option>
+                <option value="research">科研</option>
+                <option value="nursing">护理</option>
+                <option value="evidence">循证</option>
+                <option value="policy">政策</option>
+              </Select>
+              <Input
+                value={presetSearch}
+                onChange={(e) => setPresetSearch(e.target.value)}
+                placeholder="搜索名称/描述/标签"
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const next = { ...presetChecked };
+                for (const row of presetList) next[row.key] = true;
+                setPresetChecked(next);
+              }}
+            >
+              全选当前列表
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                const next = { ...presetChecked };
+                for (const row of presetList) next[row.key] = false;
+                setPresetChecked(next);
+              }}
+            >
+              清空当前列表
+            </Button>
+            <span className="nm-muted" style={{ fontSize: 12, alignSelf: "center" }}>
+              已选 {selectedPresetItems.length} / 当前可见 {presetList.length}
+            </span>
+          </div>
+
+          <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 8 }}>
+            {presetCatalogLoading ? (
+              <div aria-busy="true">
+                <Skeleton style={{ height: 40, marginBottom: 8 }} />
+                <Skeleton style={{ height: 40, marginBottom: 8 }} />
+                <Skeleton style={{ height: 40 }} />
+              </div>
+            ) : presetList.length === 0 ? (
+              <p className="nm-muted">当前筛选下无可选预设</p>
+            ) : (
+              <div style={{ display: "grid", gap: 8, maxHeight: "36vh", overflow: "auto" }}>
+                {presetList.map((row) => (
+                  <label
+                    key={row.key}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "20px 1fr",
+                      gap: 8,
+                      alignItems: "start",
+                      borderBottom: "1px solid var(--border)",
+                      paddingBottom: 8,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!presetChecked[row.key]}
+                      onChange={(e) =>
+                        setPresetChecked((prev) => ({ ...prev, [row.key]: e.target.checked }))
+                      }
+                    />
+                    <div>
+                      <div style={{ fontSize: 13, color: "var(--fg-0)" }}>
+                        {row.item.name} <span className="nm-muted">[{row.item.kind}]</span>
+                      </div>
+                      <div className="nm-muted" style={{ fontSize: 12 }}>
+                        {row.packLabel} · {row.item.category} · {row.item.fetchIntervalSec}s
+                      </div>
+                      {row.item.description ? (
+                        <div className="nm-muted" style={{ fontSize: 12 }}>
+                          {row.item.description}
+                        </div>
+                      ) : null}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Button variant="ghost" onClick={() => setPresetCenterOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              disabled={importingPreset || selectedPresetItems.length === 0}
+              onClick={() => void importSelectedPresetItems()}
+            >
+              {importingPreset ? "导入中..." : `导入所选（${selectedPresetItems.length}）`}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
       <Dialog open={dupOpen} onClose={() => setDupOpen(false)} title="重复信源">
         {dupGroups.length === 0 ? (
           <p className="nm-muted">没有重复组</p>
@@ -564,6 +891,57 @@ export default function SourcesPage() {
               </Button>
             </div>
           </>
+        )}
+      </Dialog>
+
+      <Dialog open={importResultOpen} onClose={() => setImportResultOpen(false)} title="导入结果明细">
+        {!lastImportResult ? (
+          <p className="nm-muted">暂无导入记录</p>
+        ) : (
+          <div style={{ display: "grid", gap: 12, maxHeight: "70vh", overflow: "auto" }}>
+            <div className="nm-muted" style={{ fontSize: 13 }}>
+              请求 {lastImportResult.requestedCount ?? "-"} · 来源{" "}
+              {lastImportResult.importedFrom === "manual-selection" ? "手动选择" : "整包导入"} ·
+              新增 {lastImportResult.createdCount} · 已存在 {lastImportResult.conflictCount} · 失败{" "}
+              {lastImportResult.failedCount}
+            </div>
+            <section>
+              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>新增成功</h3>
+              {lastImportResult.created.length === 0 ? (
+                <p className="nm-muted">无</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                  {lastImportResult.created.map((x) => (
+                    <li key={`created-${x.id}`}>{x.name}（{x.kind}，{x.id.slice(0, 8)}…）</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section>
+              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>已存在（冲突）</h3>
+              {lastImportResult.conflicts.length === 0 ? (
+                <p className="nm-muted">无</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                  {lastImportResult.conflicts.map((x) => (
+                    <li key={`conflict-${x.id}`}>{x.name}（{x.kind}，{x.id.slice(0, 8)}…）</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+            <section>
+              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>失败明细</h3>
+              {lastImportResult.failed.length === 0 ? (
+                <p className="nm-muted">无</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                  {lastImportResult.failed.map((x, idx) => (
+                    <li key={`failed-${idx}`}>{x.name}：{x.reason}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
         )}
       </Dialog>
 

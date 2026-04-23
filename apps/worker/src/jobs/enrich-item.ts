@@ -3,6 +3,7 @@ import { embedText, translateAndTag } from "@news/ai";
 import { createLogger } from "@news/shared";
 import {
   getClusterById,
+  getClusterDistinctSourceCount,
   getItemById,
   updateClusterCentroidAfterItemEnriched,
   upsertItemEnrichment,
@@ -32,7 +33,10 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
   });
   const embeddingInput = [item.title ?? "", item.contentText ?? ""].join("\n").trim();
   const embedding = await embedText(embeddingInput || item.id);
-  const cluster = await assignClusterForEmbedding(embedding);
+  const cluster = await assignClusterForEmbedding(embedding, {
+    textLength: embeddingInput.length,
+    lang: output.lang,
+  });
 
   await upsertItemEnrichment({
     itemId: item.id,
@@ -68,6 +72,7 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
       categoryDomain: output.categoryDomain,
       categoryTopic: output.categoryTopic,
       categoryEntity: output.categoryEntity,
+      categoryMeta: output.categoryMeta,
       lang: output.lang,
       clusterId: cluster.clusterId,
     },
@@ -75,12 +80,14 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
 
   const clusterRow = await getClusterById(cluster.clusterId);
   if (clusterRow) {
+    const distinctSourceCount = await getClusterDistinctSourceCount(cluster.clusterId);
     await publish("news.events", {
       type: "cluster.updated",
       cluster: {
         id: clusterRow.id,
         topic: clusterRow.topic,
         itemCount: clusterRow.itemCount,
+        distinctSourceCount,
         lastSeenAt: clusterRow.lastSeenAt?.toISOString() ?? null,
       },
     });

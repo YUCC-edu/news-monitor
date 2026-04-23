@@ -41,6 +41,7 @@ pnpm exec tsx --env-file=.env scripts/inspect-queue-failures.ts --queue enrich-i
 | `401`、`403`、`code`、鉴权 | `WEWE_RSS_AUTH_CODE` 与 WeWe 不一致，或 RSSHub 路由需 Cookie | 对齐口令；按 RSSHub 文档配置 |
 | `wechat-wewe 返回的是网页 HTML` | Feed 贴成 `/dash/...` 或未映射的地址 | 使用 `/feeds/...atom` 或依赖 connector 的 URL 规范化 |
 | `404 status code (no body)`（富化） | 嵌入或聊天接口 **URL 路径错误**、网关返回空 404、或模型路由不存在 | 核对 `LLM_BASE_URL`（是否含 `/v1`）、`LLM_CHAT_MODEL` / `LLM_EMBEDDING_MODEL` 与供应商文档；用 `curl` 对 `.../embeddings` 与 `.../chat/completions` 试跑 |
+| `invalid_type` + `Expected array, received string`（`tags` / `category_domain` / `category_topic` / `category_entity`） | LLM 返回把数组字段写成了逗号分隔字符串，旧版 `translateAndTag` 只接受数组，导致 `enrich-item` 任务直接失败 | 升级到包含字符串数组兼容修复的版本并重启 Worker；执行 `retry-enrich-failed` 重新富化失败条目 |
 | `LLM`、`401`、`429`、`JSON`、`embedding` | `LLM_BASE_URL` / `LLM_API_KEY` / 模型名错误或限流 | 在设置页修正 LLM；降温请求频率 |
 | `item-not-found`（若出现） | 数据与队列不一致 | 较少见；`enrich` 若未抛错则不会进 failed，多为其它 DB 错误 |
 

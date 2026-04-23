@@ -3,7 +3,7 @@
 **单一事实来源（SSOT）**：本文件 + 根目录 [README.md](../README.md)「当前状态」一节。  
 [实现计划](./plans/2026-04-17-news-monitor-implementation.md) 中的逐步 checkbox 为历史分步稿，**不以全篇 `- [ ]` 作为交付依据**。
 
-最后更新：2026-04-19（与仓库当前结构对齐）。
+最后更新：2026-04-21（与仓库当前结构对齐，含全局搜索与 Agent 接口增强）。
 
 ---
 
@@ -26,6 +26,8 @@
 ## 其它已交付但计划未逐条列出的能力（节选）
 
 - **收藏 / 标签 / 分类**：[`apps/web/app/(dash)/favorites/page.tsx`](../apps/web/app/(dash)/favorites/page.tsx)、[`api/favorites`](../apps/web/app/api/favorites/route.ts)、[`api/tags`](../apps/web/app/api/tags/route.ts)、[`categories`](../apps/web/app/(dash)/categories/page.tsx)
+- **全局搜索（⌘K）**：[`apps/web/app/ui/command-palette.tsx`](../apps/web/app/ui/command-palette.tsx)、[`apps/web/app/api/search/global/route.ts`](../apps/web/app/api/search/global/route.ts)、[`apps/web/app/(dash)/search/page.tsx`](../apps/web/app/(dash)/search/page.tsx)
+- **Agent 能力接口**：[`apps/web/app/api/agent/`](../apps/web/app/api/agent/)（对接说明见 [`docs/agent-integration/README.md`](./agent-integration/README.md)）
 - **统计页**：[`apps/web/app/(dash)/stats/page.tsx`](../apps/web/app/(dash)/stats/page.tsx)（轻量 CSS 条形图，非 ECharts；见 [DESIGN-DELTA.md](./DESIGN-DELTA.md)）
 - **全部分页**：[`apps/web/app/(dash)/all/page.tsx`](../apps/web/app/(dash)/all/page.tsx)
 - **运维脚本**：[`scripts/retry-enrich-failed.ts`](../scripts/retry-enrich-failed.ts)、[`scripts/cleanup-repeat-jobs.ts`](../scripts/cleanup-repeat-jobs.ts) 等

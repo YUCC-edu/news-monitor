@@ -30,14 +30,36 @@ function neighborSearchOptions() {
   };
 }
 
+type ClusterSignals = {
+  textLength?: number;
+  lang?: "zh" | "en";
+  /** Optional override for experiments. */
+  threshold?: number;
+};
+
+function computeAdaptiveThreshold(base: number, signals: ClusterSignals, candidateCount: number) {
+  let next = base;
+  const textLength = Math.max(0, signals.textLength ?? 0);
+  if (textLength > 1200) next -= 0.02;
+  else if (textLength < 120) next += 0.015;
+  if (signals.lang === "zh") next -= 0.01;
+  if (candidateCount <= 1) next += 0.01;
+  else if (candidateCount >= 10) next -= 0.015;
+  return Math.min(0.999, Math.max(0.5, next));
+}
+
 export async function assignClusterForEmbedding(
   embedding: number[],
-  threshold?: number,
+  signals: ClusterSignals = {},
 ) {
-  const th =
-    threshold != null && Number.isFinite(threshold)
-      ? threshold
-      : Math.min(0.999, Math.max(0.5, parseEnvFloat("CLUSTER_SIM_THRESHOLD", DEFAULT_THRESHOLD)));
+  const configured = Math.min(
+    0.999,
+    Math.max(0.5, parseEnvFloat("CLUSTER_SIM_THRESHOLD", DEFAULT_THRESHOLD)),
+  );
+  const base =
+    signals.threshold != null && Number.isFinite(signals.threshold)
+      ? Math.min(0.999, Math.max(0.5, signals.threshold))
+      : configured;
   const opts = neighborSearchOptions();
   const centroidHits = await findTopClusterCandidatesByCentroid(embedding, {
     topK: opts.centroidTopK,
@@ -53,6 +75,7 @@ export async function assignClusterForEmbedding(
   for (const h of memberHits) {
     merged.set(h.clusterId, Math.max(merged.get(h.clusterId) ?? 0, h.sim));
   }
+  const th = computeAdaptiveThreshold(base, signals, merged.size);
   const sorted = [...merged.entries()].sort((a, b) => b[1] - a[1]);
   for (const [clusterId, sim] of sorted) {
     if (sim >= th) {

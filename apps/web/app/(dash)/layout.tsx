@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { cn } from "@/app/ui/cn";
 import { CommandPalette } from "@/app/ui/command-palette";
@@ -228,15 +227,12 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
           </div>
         ) : null}
 
-        <motion.main
+        <main
           className="nm-page"
           style={{ padding: "24px 28px 48px", flex: 1 }}
-          initial={{ opacity: 0.88 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.14, ease: [0.2, 0.8, 0.2, 1] }}
         >
           {children}
-        </motion.main>
+        </main>
         <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
       </div>
 

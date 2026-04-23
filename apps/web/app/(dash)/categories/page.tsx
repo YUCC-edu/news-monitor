@@ -1,7 +1,8 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { Button } from "@/app/ui/button";
 import { Card } from "@/app/ui/card";
@@ -28,6 +29,10 @@ type TimelineItem = {
   categoryDomain?: string[] | null;
   categoryTopic?: string[] | null;
   categoryEntity?: string[] | null;
+  categoryMeta?: {
+    confidence?: { domain?: number; topic?: number; entity?: number };
+    source?: { domain?: "rule" | "llm" | "mixed"; topic?: "rule" | "llm" | "mixed"; entity?: "rule" | "llm" | "mixed" };
+  } | null;
   clusterId: string | null;
   clusterTopic: string | null;
   relatedCount: number | null;
@@ -50,29 +55,53 @@ function formatZhDateTime(raw: string | null | undefined) {
   }).format(d);
 }
 
-export default function CategoriesPage() {
+function CategoriesPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [dimension, setDimension] = useState<CategoryDimension>("domain");
   const [matchMode, setMatchMode] = useState<MatchMode>("all");
   const [selected, setSelected] = useState<string[]>([]);
+  const [showAllTags, setShowAllTags] = useState(false);
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadErr(null);
+    try {
+      const qs = new URLSearchParams({ limit: "120", taxonomyOnly: "1", sort: "published" });
+      const data = (await fetch(`/api/items?${qs.toString()}`).then((r) => r.json())) as TimelineItem[];
+      setItems(data);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : "分类加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    const qs = new URLSearchParams({ limit: "120" });
-    fetch(`/api/items?${qs.toString()}`)
-      .then((r) => r.json())
-      .then((data: TimelineItem[]) => {
-        if (active) setItems(data);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    const dim = searchParams.get("dimension");
+    const selectedRaw = searchParams.get("selected");
+    if (dim === "domain" || dim === "topic" || dim === "entity") setDimension(dim);
+    if (selectedRaw) {
+      const parsed = selectedRaw
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      if (parsed.length > 0) setSelected(parsed);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 45000);
     return () => {
-      active = false;
+      clearInterval(t);
     };
-  }, []);
+  }, [load]);
 
   const selectedKey = useMemo(() => selected.join("||"), [selected]);
   const valuesByItem = useMemo(() => {
@@ -97,6 +126,13 @@ export default function CategoriesPage() {
     return Array.from(countByTag.keys()).sort((a, b) => (countByTag.get(b) ?? 0) - (countByTag.get(a) ?? 0));
   }, [countByTag]);
 
+  const visibleChipTags = useMemo(() => {
+    if (showAllTags) return chipTags;
+    const top = chipTags.slice(0, 12);
+    const keep = selected.filter((x) => chipTags.includes(x));
+    return [...new Set([...keep, ...top])];
+  }, [chipTags, selected, showAllTags]);
+
   const filteredItems = useMemo(() => {
     if (selected.length === 0) return items;
     return items.filter((item) => {
@@ -116,6 +152,43 @@ export default function CategoriesPage() {
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
     );
   }
+
+  function changeDimension(next: CategoryDimension) {
+    setDimension(next);
+    const p = new URLSearchParams(searchParams.toString());
+    p.set("dimension", next);
+    router.replace(`/categories?${p.toString()}`, { scroll: false });
+  }
+
+  useEffect(() => {
+    const p = new URLSearchParams(searchParams.toString());
+    p.set("dimension", dimension);
+    if (selected.length > 0) p.set("selected", selected.join(","));
+    else p.delete("selected");
+    const target = p.toString();
+    if (target === searchParams.toString()) return;
+    router.replace(target ? `/categories?${target}` : "/categories", { scroll: false });
+  }, [dimension, selected, router, searchParams]);
+
+  const explain = useMemo(() => {
+    const selectedRows = filteredItems.filter((item) => {
+      const source = item.categoryMeta?.source?.[dimension];
+      return source === "rule" || source === "llm" || source === "mixed";
+    });
+    if (selectedRows.length === 0) return null;
+    const sourceCount = { rule: 0, llm: 0, mixed: 0 };
+    let confidenceSum = 0;
+    for (const row of selectedRows) {
+      const src = row.categoryMeta?.source?.[dimension];
+      if (src) sourceCount[src] += 1;
+      confidenceSum += row.categoryMeta?.confidence?.[dimension] ?? 0;
+    }
+    return {
+      sourceCount,
+      avgConfidence: confidenceSum / selectedRows.length,
+      sampleSize: selectedRows.length,
+    };
+  }, [filteredItems, dimension]);
 
   async function toggleFavorite(itemId: string, currentlyFav: boolean) {
     await fetch(`/api/items/${itemId}/favorite`, {
@@ -155,13 +228,13 @@ export default function CategoriesPage() {
 
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <Button variant={dimension === "domain" ? "primary" : "ghost"} size="sm" onClick={() => setDimension("domain")}>
+          <Button variant={dimension === "domain" ? "primary" : "ghost"} size="sm" onClick={() => changeDimension("domain")}>
             行业
           </Button>
-          <Button variant={dimension === "topic" ? "primary" : "ghost"} size="sm" onClick={() => setDimension("topic")}>
+          <Button variant={dimension === "topic" ? "primary" : "ghost"} size="sm" onClick={() => changeDimension("topic")}>
             主题
           </Button>
-          <Button variant={dimension === "entity" ? "primary" : "ghost"} size="sm" onClick={() => setDimension("entity")}>
+          <Button variant={dimension === "entity" ? "primary" : "ghost"} size="sm" onClick={() => changeDimension("entity")}>
             实体
           </Button>
           <Button variant={matchMode === "all" ? "primary" : "ghost"} size="sm" onClick={() => setMatchMode("all")}>
@@ -172,7 +245,7 @@ export default function CategoriesPage() {
           </Button>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {chipTags.map((tag) => {
+          {visibleChipTags.map((tag) => {
             const active = selected.includes(tag);
             const count = countByTag.get(tag) ?? 0;
             return (
@@ -190,7 +263,30 @@ export default function CategoriesPage() {
           {chipTags.length === 0 && (
             <span className="nm-muted">暂无分类统计（等待 AI 富化）</span>
           )}
+          {chipTags.length > 12 ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowAllTags((v) => !v)}
+            >
+              {showAllTags ? "收起" : `更多（+${chipTags.length - 12}）`}
+            </Button>
+          ) : null}
         </div>
+        {explain ? (
+          <div style={{ marginTop: 10, color: "var(--fg-2)", fontSize: 12 }}>
+            分类依据：规则 {explain.sourceCount.rule} / LLM {explain.sourceCount.llm} / 混合 {explain.sourceCount.mixed}
+            · 平均置信度 {(explain.avgConfidence * 100).toFixed(0)}%（样本 {explain.sampleSize}）
+          </div>
+        ) : null}
+        {loadErr ? <div style={{ marginTop: 8, color: "#ff8f8f", fontSize: 12 }}>{loadErr}</div> : null}
+        {chipTags.length === 0 && !loading ? (
+          <div style={{ marginTop: 8 }}>
+            <Button variant="ghost" size="sm" onClick={() => void load()}>
+              重新加载分类
+            </Button>
+          </div>
+        ) : null}
       </Card>
 
       <div style={{ display: "grid", gap: 12 }}>
@@ -296,6 +392,14 @@ export default function CategoriesPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function CategoriesPage() {
+  return (
+    <Suspense fallback={<div aria-busy="true"><Skeleton style={{ height: 96 }} /></div>}>
+      <CategoriesPageInner />
+    </Suspense>
   );
 }
 

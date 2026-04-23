@@ -6,6 +6,14 @@ import path from "node:path";
 import { createLogger } from "@news/shared";
 
 const log = createLogger("api:system");
+const SYSTEM_CACHE_TTL_MS = 5000;
+let systemCache:
+  | {
+      payload: Awaited<ReturnType<typeof buildSystemSnapshot>>;
+      expiresAt: number;
+    }
+  | null = null;
+let inflightSnapshot: Promise<Awaited<ReturnType<typeof buildSystemSnapshot>>> | null = null;
 
 function maskUrl(raw: string | undefined) {
   if (!raw) return null;
@@ -72,6 +80,32 @@ async function queueCounts(name: string, url: string) {
   }
 }
 
+async function getQueueLatestFailed(name: string, url: string) {
+  const u = new URL(url);
+  const q = new Queue(name, {
+    connection: {
+      host: u.hostname || "127.0.0.1",
+      port: Number(u.port || 6379),
+      password: u.password || undefined,
+    },
+  });
+  try {
+    const rows = await q.getFailed(0, 0);
+    const first = rows[0];
+    if (!first) return null;
+    return {
+      jobId: String(first.id ?? ""),
+      failedReason: (first.failedReason ?? "").slice(0, 220),
+      attemptsMade: first.attemptsMade ?? 0,
+      finishedOn: first.finishedOn ?? null,
+    };
+  } catch {
+    return null;
+  } finally {
+    await q.close().catch(() => undefined);
+  }
+}
+
 async function listBackups() {
   const dir = path.resolve(process.cwd(), "..", "..", "backups");
   try {
@@ -90,8 +124,7 @@ async function listBackups() {
   }
 }
 
-export async function GET() {
-  const t0 = Date.now();
+async function buildSystemSnapshot() {
   const redisUrl = process.env.REDIS_URL ?? "";
   const [redisOk, rsshubOk, weweOk] = await Promise.all([
     redisUrl ? pingRedis(redisUrl) : Promise.resolve(false),
@@ -100,15 +133,27 @@ export async function GET() {
   ]);
 
   const queues: Record<string, Awaited<ReturnType<typeof queueCounts>>> = {};
+  const queueLatestFailed: Record<string, Awaited<ReturnType<typeof getQueueLatestFailed>>> = {};
   if (redisUrl) {
-    for (const name of ["fetch-source", "enrich-item", "name-cluster", "retention"]) {
-      queues[name] = await queueCounts(name, redisUrl);
+    const queueNames = ["fetch-source", "enrich-item", "name-cluster", "retention"] as const;
+    const snapshots = await Promise.all(
+      queueNames.map(async (name) => {
+        const [counts, latestFailed] = await Promise.all([
+          queueCounts(name, redisUrl),
+          getQueueLatestFailed(name, redisUrl),
+        ]);
+        return { name, counts, latestFailed };
+      }),
+    );
+    for (const row of snapshots) {
+      queues[row.name] = row.counts;
+      queueLatestFailed[row.name] = row.latestFailed;
     }
   }
 
   const backups = await listBackups();
 
-  const payload = {
+  return {
     env: {
       database: {
         url: maskUrl(process.env.DATABASE_URL),
@@ -137,6 +182,7 @@ export async function GET() {
       },
     },
     queues,
+    queueLatestFailed,
     backups: backups.map((b) => ({
       name: b.name,
       sizeKB: Math.round(b.size / 1024),
@@ -148,12 +194,36 @@ export async function GET() {
       uptimeSec: Math.floor(process.uptime()),
     },
   };
-  log.debug("system snapshot generated", {
-    latencyMs: Date.now() - t0,
-    redisOk,
-    rsshubOk,
-    weweOk,
-    queueNames: Object.keys(queues).join(","),
-  });
-  return NextResponse.json(payload);
+}
+
+export async function GET() {
+  const t0 = Date.now();
+  if (systemCache && Date.now() < systemCache.expiresAt) {
+    log.debug("system snapshot cache hit", { latencyMs: Date.now() - t0 });
+    return NextResponse.json(systemCache.payload);
+  }
+  try {
+    if (!inflightSnapshot) {
+      inflightSnapshot = buildSystemSnapshot().finally(() => {
+        inflightSnapshot = null;
+      });
+    }
+    const payload = await inflightSnapshot;
+    systemCache = { payload, expiresAt: Date.now() + SYSTEM_CACHE_TTL_MS };
+    log.debug("system snapshot generated", {
+      latencyMs: Date.now() - t0,
+      redisOk: payload.env.redis.ok,
+      rsshubOk: payload.env.rsshub.ok,
+      weweOk: payload.env.wewe.ok,
+      queueNames: Object.keys(payload.queues).join(","),
+    });
+    return NextResponse.json(payload);
+  } catch (error) {
+    log.warn("system snapshot failed", {
+      latencyMs: Date.now() - t0,
+      errorClass: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }

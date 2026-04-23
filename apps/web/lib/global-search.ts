@@ -22,7 +22,6 @@ export const DASH_NAV: Array<{ href: string; label: string; group?: string }> = 
   { href: "/stats", label: "统计", group: "系统" },
   { href: "/ops", label: "运维", group: "系统" },
   { href: "/settings", label: "设置", group: "系统" },
-  { href: "/system", label: "系统", group: "系统" },
 ];
 
 export const SETTINGS_CATALOG: Array<{ key: string; title: string; description: string; href: string }> = [

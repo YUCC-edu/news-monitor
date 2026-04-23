@@ -120,9 +120,15 @@ type TimelineItem = {
   categoryDomain?: string[] | null;
   categoryTopic?: string[] | null;
   categoryEntity?: string[] | null;
+  categoryMeta?: {
+    confidence?: { domain?: number; topic?: number; entity?: number };
+    source?: { domain?: "rule" | "llm" | "mixed"; topic?: "rule" | "llm" | "mixed"; entity?: "rule" | "llm" | "mixed" };
+  } | null;
   clusterId: string | null;
   clusterTopic: string | null;
   relatedCount: number | null;
+  relatedSourceCount?: number | null;
+  clusterItemCount?: number | null;
   publishedAt: string | null;
   fetchedAt: string;
   favoritedAt?: string | null;
@@ -251,9 +257,11 @@ function DashboardInner() {
   }, [q]);
 
   const curatedReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const curatedReloadFollowupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleCuratedReload = useCallback(() => {
     if (curatedReloadTimer.current) clearTimeout(curatedReloadTimer.current);
+    if (curatedReloadFollowupTimer.current) clearTimeout(curatedReloadFollowupTimer.current);
     curatedReloadTimer.current = setTimeout(() => {
       curatedReloadTimer.current = null;
       const qs = itemsApiQuery("curated", rangeRef.current, queryRef.current, sortRef.current);
@@ -265,6 +273,18 @@ function DashboardInner() {
         })
         .catch(() => {});
     }, 450);
+    // second pull reduces misses when cluster/enrich events arrive slightly later.
+    curatedReloadFollowupTimer.current = setTimeout(() => {
+      curatedReloadFollowupTimer.current = null;
+      const qs = itemsApiQuery("curated", rangeRef.current, queryRef.current, sortRef.current);
+      void fetch(`/api/items?${qs}`)
+        .then((r) => r.json())
+        .then((data: TimelineItem[]) => {
+          if (feedRef.current !== "curated") return;
+          setItems(data);
+        })
+        .catch(() => {});
+    }, 1800);
   }, []);
 
   useEffect(() => {
@@ -380,6 +400,8 @@ function DashboardInner() {
           clusterId: null,
           clusterTopic: null,
           relatedCount: null,
+          relatedSourceCount: null,
+          clusterItemCount: null,
           publishedAt: payload.publishedAt ?? null,
           fetchedAt: new Date().toISOString(),
         };
@@ -428,19 +450,20 @@ function DashboardInner() {
       const payload = parsed.item;
       if (!payload?.id) return;
       if (feedRef.current === "all") {
-        setItems((prev) =>
-          prev.map((item) =>
-            item.id === payload.id
-              ? {
-                  ...item,
-                  titleZh: payload.titleZh ?? item.titleZh,
-                  contentZh: payload.contentZh ?? item.contentZh,
-                  tags: payload.tags ?? item.tags,
-                  clusterId: payload.clusterId ?? item.clusterId,
-                }
-              : item,
-          ),
-        );
+        setItems((prev) => {
+          const idx = prev.findIndex((item) => item.id === payload.id);
+          if (idx < 0) return prev;
+          const cur = prev[idx]!;
+          const next = [...prev];
+          next[idx] = {
+            ...cur,
+            titleZh: payload.titleZh ?? cur.titleZh,
+            contentZh: payload.contentZh ?? cur.contentZh,
+            tags: payload.tags ?? cur.tags,
+            clusterId: payload.clusterId ?? cur.clusterId,
+          };
+          return next;
+        });
       } else {
         scheduleCuratedReload();
       }
@@ -449,18 +472,26 @@ function DashboardInner() {
 
     es.addEventListener("cluster.updated", (event) => {
       const parsed = JSON.parse((event as MessageEvent).data) as {
-        cluster?: { id: string; itemCount?: number };
+        cluster?: { id: string; itemCount?: number; distinctSourceCount?: number };
       };
       const c = parsed.cluster;
       if (!c?.id) return;
       if (feedRef.current === "all") {
-        setItems((prev) =>
-          prev.map((item) =>
+        setItems((prev) => {
+          if (!prev.some((item) => item.clusterId === c.id)) return prev;
+          return prev.map((item) =>
             item.clusterId === c.id
-              ? { ...item, relatedCount: c.itemCount ?? item.relatedCount }
+              ? {
+                  ...item,
+                  clusterItemCount: c.itemCount ?? item.clusterItemCount ?? null,
+                  relatedSourceCount:
+                    c.distinctSourceCount ?? item.relatedSourceCount ?? item.relatedCount ?? null,
+                  relatedCount:
+                    c.distinctSourceCount ?? item.relatedSourceCount ?? item.relatedCount ?? null,
+                }
               : item,
-          ),
-        );
+          );
+        });
       } else {
         scheduleCuratedReload();
       }
@@ -510,6 +541,7 @@ function DashboardInner() {
     () => dedupeSiblingsBySource(siblingsRows),
     [siblingsRows],
   );
+  const animateRows = items.length <= 40;
 
   return (
     <div>
@@ -633,9 +665,13 @@ function DashboardInner() {
             return (
             <motion.div
               key={item.id}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: Math.min(i * 0.03, 0.4), duration: 0.2 }}
+              initial={animateRows ? { opacity: 0, y: 4 } : false}
+              animate={animateRows ? { opacity: 1, y: 0 } : false}
+              transition={
+                animateRows
+                  ? { delay: Math.min(i * 0.015, 0.16), duration: 0.16 }
+                  : undefined
+              }
             >
               <Card>
                 <div style={{ display: "flex", gap: 0, alignItems: "stretch" }}>
@@ -753,8 +789,38 @@ function DashboardInner() {
                         ))}
                       </div>
                     )}
-                    {typeof item.relatedCount === "number" &&
-                      item.relatedCount > 1 &&
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {(item.categoryDomain ?? []).slice(0, 1).map((v) => (
+                        <button
+                          key={`${item.id}-domain-${v}`}
+                          type="button"
+                          onClick={() => router.push(`/categories?dimension=domain&selected=${encodeURIComponent(v)}`)}
+                          style={metaChipStyle}
+                          title="按行业筛选"
+                        >
+                          行业: {v}
+                        </button>
+                      ))}
+                      {(item.categoryTopic ?? []).slice(0, 1).map((v) => (
+                        <button
+                          key={`${item.id}-topic-${v}`}
+                          type="button"
+                          onClick={() => router.push(`/categories?dimension=topic&selected=${encodeURIComponent(v)}`)}
+                          style={metaChipStyle}
+                          title="按主题筛选"
+                        >
+                          主题: {v}
+                        </button>
+                      ))}
+                      {item.categoryMeta?.confidence?.domain != null ? (
+                        <span style={metaInfoStyle}>
+                          分类置信 {(item.categoryMeta.confidence.domain * 100).toFixed(0)}% ·{" "}
+                          {item.categoryMeta?.source?.domain ?? "mixed"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {typeof (item.relatedSourceCount ?? item.relatedCount) === "number" &&
+                      (item.relatedSourceCount ?? item.relatedCount)! > 1 &&
                       item.clusterId && (
                         <div
                           style={{
@@ -769,7 +835,7 @@ function DashboardInner() {
                         >
                           <span>
                             {item.clusterTopic ? `#${item.clusterTopic} · ` : ""}
-                            另有 {Math.max(0, (item.relatedCount ?? 1) - 1)} 个不同来源也报道了此事件
+                            另有 {Math.max(0, ((item.relatedSourceCount ?? item.relatedCount) ?? 1) - 1)} 个源也报道了此事件
                           </span>
                           <button
                             type="button"
@@ -942,6 +1008,22 @@ const tagStyle: CSSProperties = {
   border: "1px solid var(--border-strong)",
   borderRadius: 999,
   padding: "2px 8px",
+};
+
+const metaChipStyle: CSSProperties = {
+  fontSize: 11,
+  color: "var(--fg-1)",
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  padding: "2px 8px",
+  background: "var(--bg-0)",
+  cursor: "pointer",
+};
+
+const metaInfoStyle: CSSProperties = {
+  fontSize: 11,
+  color: "var(--fg-2)",
+  alignSelf: "center",
 };
 
 const miniBtn: CSSProperties = {

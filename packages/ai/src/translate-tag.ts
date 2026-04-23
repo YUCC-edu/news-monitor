@@ -1,6 +1,6 @@
 import {
   CONTROLLED_TAGS,
-  deriveTaxonomy,
+  deriveTaxonomyWithMeta,
   detectLangSimple,
   isControlledTag,
 } from "@news/shared";
@@ -17,6 +17,21 @@ const OutputSchema = z.object({
   category_entity: z.array(z.string()).optional(),
 });
 
+function normalizeStringArray(input: unknown): string[] {
+  if (Array.isArray(input)) {
+    return input
+      .map((v) => (typeof v === "string" ? v.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof input === "string") {
+    return input
+      .split(/[\n,，;；|]/g)
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 export type TranslateTagInput = {
   title?: string | null;
   contentText?: string | null;
@@ -30,6 +45,14 @@ export type TranslateTagOutput = {
   categoryDomain: string[];
   categoryTopic: string[];
   categoryEntity: string[];
+  categoryMeta: {
+    confidence: { domain: number; topic: number; entity: number };
+    source: {
+      domain: "rule" | "llm" | "mixed";
+      topic: "rule" | "llm" | "mixed";
+      entity: "rule" | "llm" | "mixed";
+    };
+  };
 };
 
 function clampTags(tags: string[]) {
@@ -67,8 +90,15 @@ export async function translateAndTag(
   );
 
   const raw = await client.chatJson({ system, user });
-  const parsed = OutputSchema.parse(JSON.parse(raw));
-  const categories = deriveTaxonomy({
+  const parsedJson = JSON.parse(raw) as Record<string, unknown>;
+  const parsed = OutputSchema.parse({
+    ...parsedJson,
+    tags: normalizeStringArray(parsedJson.tags),
+    category_domain: normalizeStringArray(parsedJson.category_domain),
+    category_topic: normalizeStringArray(parsedJson.category_topic),
+    category_entity: normalizeStringArray(parsedJson.category_entity),
+  });
+  const categories = deriveTaxonomyWithMeta({
     title: title,
     content: content,
     tags: parsed.tags,
@@ -76,14 +106,25 @@ export async function translateAndTag(
     llmTopic: parsed.category_topic,
     llmEntity: parsed.category_entity,
   });
+  const minCategoryConfidence = parseFloat(process.env.TAXONOMY_MIN_CONFIDENCE ?? "0.45");
+  const domain =
+    categories.confidence.domain >= minCategoryConfidence ? categories.domain : parsed.category_domain ?? [];
+  const topic =
+    categories.confidence.topic >= minCategoryConfidence ? categories.topic : parsed.category_topic ?? [];
+  const entity =
+    categories.confidence.entity >= minCategoryConfidence ? categories.entity : parsed.category_entity ?? [];
 
   return {
     lang: parsed.lang,
     titleZh: parsed.title_zh,
     contentZh: parsed.content_zh,
     tags: clampTags(parsed.tags),
-    categoryDomain: categories.domain,
-    categoryTopic: categories.topic,
-    categoryEntity: categories.entity,
+    categoryDomain: domain,
+    categoryTopic: topic,
+    categoryEntity: entity,
+    categoryMeta: {
+      confidence: categories.confidence,
+      source: categories.source,
+    },
   };
 }

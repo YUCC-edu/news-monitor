@@ -243,6 +243,21 @@ export default function OpsPage() {
           <div>演练清单：Redis断连 / LLM404 / WeWe401 / RSSHub超时 / 历史failed残留（每周至少一次）。</div>
         </div>
       </section>
+
+      <section style={{ marginTop: 16, border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
+        <h2 style={{ margin: "0 0 10px", fontSize: 15 }}>聚类/分类质量巡检</h2>
+        <div style={{ fontSize: 13, color: "var(--fg-1)", display: "grid", gap: 8 }}>
+          <div>
+            每日执行：<code>pnpm run quality:eval -- --days 7</code>
+          </div>
+          <div>
+            重点关注：多信源簇占比、splitRiskClusters、taxonomyCoverage、named_cluster_ratio。
+          </div>
+          <div>
+            处理策略：先调 taxonomy（词典/黑名单）→ 再调 Hybrid Score 权重（<code>CLUSTER_SCORE_W_*</code>）→ 最后调聚类阈值。
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

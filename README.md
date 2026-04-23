@@ -7,12 +7,15 @@
 - **进度与里程碑快照（推荐先看）**：`docs/STATUS.md`
 - 设计：`docs/specs/2026-04-17-news-monitor-design.md`
 - 设计 vs 实现差异表：`docs/DESIGN-DELTA.md`
+- Agent 接入能力：`docs/agent-integration/README.md`
+- 回归与灰度矩阵：`docs/runbooks/product-rollout-regression-matrix.md`
 - 实现计划（历史分步稿）：`docs/plans/2026-04-17-news-monitor-implementation.md`（交付状态以本 README 与 `docs/STATUS.md` 为准）
 
 ## 当前状态
 
 - ✅ **M0-M5 已完成主链路**：信源管理、抓取、时间轴、SSE、翻译打标签、聚类、健康面板、关键词通知。
 - ✅ **M6（主路径）**：数据保留（retention）、备份脚本与运维说明已接入；里程碑与路径锚点见 `docs/STATUS.md`。
+- ✅ **近期增强已落地**：全局搜索（`⌘K` + `/search`）、Agent API（`/api/agent/*`）、队列排障 runbook。
 
 ## 快速开始（M0）
 
@@ -43,6 +46,23 @@ docker compose up -d --build web
 ```
 
 打开 [http://localhost:3000](http://localhost:3000) → 进入时间轴。
+
+> 说明：只启动 `web` 可浏览页面；要执行抓取、入队、富化与聚类，请额外启动 `pnpm --filter @news/worker dev`。
+
+## 全局搜索（⌘K）
+
+已支持全局命令搜索与搜索页（Hybrid 模式）：
+
+- 触发方式：右上角 `⌘K 搜索` 或 `Ctrl/Cmd + K`
+- 交互：`↑/↓` 选择、`Enter` 打开、`Esc` 关闭
+- 覆盖范围：`nav / setting / source / creator / item`
+- 更多结果：可跳转 `/search?q=...`
+
+API 示例：
+
+```powershell
+Invoke-RestMethod "http://localhost:3000/api/search/global?q=设置&limitPerGroup=5"
+```
 
 ## Web 一站式设置页
 
@@ -113,7 +133,7 @@ docker compose up -d wewe-rss
 2. **把 `WEWE_RSS_BASE`、`WEWE_RSS_AUTH_CODE` 写在仓库根目录的 `.env`**
   Worker 用的是 `apps/worker` 里的 `tsx --env-file=../../.env`，**不会读** `apps/web/.env.local`。  
    `WEWE_RSS_AUTH_CODE` 必须与 `docker/.env`（或 compose）里 WeWe 的 `WEWE_RSS_AUTH_CODE` / 容器 `AUTH_CODE` 一致。改完后**关掉 Worker 再重新执行第 1 步**。
-3. **在网页里对该公众号点一次「立即抓取」**（或等定时抓取）。若仍失败，看博主卡片上的 `**lastError`** 全文；若是网络/401，多半是第 2 步或 Feed 地址（Docker 内不要用宿主机的 `127.0.0.1`，可改成 `host.docker.internal` 等 Worker 能访问的地址）。
+3. **在网页里对该公众号点一次「立即抓取」**（或等定时抓取）。若仍失败，看博主卡片上的 `lastError` 全文；若是网络/401，多半是第 2 步或 Feed 地址（Docker 内不要用宿主机的 `127.0.0.1`，可改成 `host.docker.internal` 等 Worker 能访问的地址）。
 
 #### WeWe 网页打不开、控制台报 fetch / Headers / ISO-8859-1
 
@@ -152,13 +172,14 @@ $env:LOG_LEVEL="debug"; pnpm --filter @news/worker dev
 $env:LOG_LEVEL="info"; $env:LOG_MODULES="worker:fetch-source,worker:enrich-item"; pnpm --filter @news/worker dev
 ```
 
-详细步骤与根因对照见 `**docs/runbooks/queue-failed-jobs.md**`。
+详细步骤与根因对照见 `docs/runbooks/queue-failed-jobs.md`。
+回归与灰度发布检查清单见 `docs/runbooks/product-rollout-regression-matrix.md`。
 
 每天 03:00 worker 会自动执行 retention：删除 90 天前 items，并清理孤立 clusters。
 
 ## 重新 enrich（Web + 脚本）
 
-- **Web**：打开 `**/ops` 运维页**，按 **信源 / 时间窗 / 单条** 将条目重新入队 `enrich-item`（单次最多 500 条）。
+- **Web**：打开 `/ops` 运维页，按 **信源 / 时间窗 / 单条** 将条目重新入队 `enrich-item`（单次最多 500 条）。
 - **HTTP API**：`POST /api/ops/re-enrich`，body 示例：`{ "scope": "source", "sourceId": "<uuid>", "limit": 200 }`；`scope` 还可为 `window`（配合 `since` / `until` ISO 字符串）或 `item`（配合 `itemId`）。
 - **脚本**：`pnpm exec tsx --env-file=.env scripts/retry-enrich-failed.ts` 用于重试队列里 **已失败** 的 enrich 作业（与上面「主动重跑」互补）。
 
@@ -170,7 +191,7 @@ $env:LOG_LEVEL="info"; $env:LOG_MODULES="worker:fetch-source,worker:enrich-item"
 
 - 绿（OK）：依赖可达，队列无明显异常。
 - 红（FAIL）：优先检查对应 URL 配置、容器运行状态与网络联通。
-- 队列 `failed` 增长：多为历史失败作业仍留在 Redis（`fetch-source` 单队列最多约保留 200 条）；先用 `scripts/inspect-queue-failures.ts` 看错误聚类，再按 `**docs/runbooks/queue-failed-jobs.md`** 修正配置并重试或清理。
+- 队列 `failed` 增长：多为历史失败作业仍留在 Redis（`fetch-source` 单队列最多约保留 200 条）；先用 `scripts/inspect-queue-failures.ts` 看错误聚类，再按 `docs/runbooks/queue-failed-jobs.md` 修正配置并重试或清理。
 - 队列 `waiting` 长期积压：通常是 worker 未启动、并发不足或依赖故障。
 - 修改配置后仍未生效：若 `uptime` 持续增长，通常说明进程尚未重启。
 - 本地日志调试：`LOG_LEVEL` 控制输出门槛（`debug|info|warn|error`），`LOG_MODULES` 可限定模块（逗号分隔）；Worker 关键模块为 `worker:index` / `worker:fetch-source` / `worker:enrich-item`。

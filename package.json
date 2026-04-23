@@ -6,12 +6,14 @@
   "scripts": {
     "dev:web": "pnpm --filter @news/web dev",
     "dev:worker": "pnpm --filter @news/worker dev",
+    "restart:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-web-worker.ps1",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "queue:inspect": "tsx --env-file=.env scripts/inspect-queue-failures.ts",
     "queue:retry-fetch": "tsx --env-file=.env scripts/retry-fetch-failed.ts",
-    "queue:retry-enrich": "tsx --env-file=.env scripts/retry-enrich-failed.ts"
+    "queue:retry-enrich": "tsx --env-file=.env scripts/retry-enrich-failed.ts",
+    "quality:eval": "tsx --env-file=.env scripts/evaluate-cluster-quality.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

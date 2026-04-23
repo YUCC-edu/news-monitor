@@ -35,6 +35,10 @@ type SystemData = {
     wewe: { ok: boolean };
   };
   queues: Record<string, QueueCounts>;
+  queueLatestFailed?: Record<
+    string,
+    { jobId: string; failedReason: string; attemptsMade: number; finishedOn: number | null } | null
+  >;
   backups: Array<{ name: string; sizeKB: number; mtime: string }>;
   node: { version: string; platform: string; uptimeSec: number };
 };
@@ -112,6 +116,13 @@ export default function SettingsPage() {
   const [prevSystem, setPrevSystem] = useState<SystemData | null>(null);
 
   const advice = useMemo(() => inferAdvice(system, prevSystem), [system, prevSystem]);
+  const failureHighlights = useMemo(() => {
+    if (!system?.queueLatestFailed) return [];
+    return Object.entries(system.queueLatestFailed)
+      .filter(([, v]) => !!v)
+      .map(([name, v]) => ({ name, row: v! }))
+      .slice(0, 4);
+  }, [system]);
 
   async function loadSettings() {
     setLoading(true);
@@ -147,7 +158,9 @@ export default function SettingsPage() {
   useEffect(() => {
     void loadSettings();
     void loadSystem();
-    const t = setInterval(() => void loadSystem(), 15000);
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void loadSystem();
+    }, 30000);
     return () => clearInterval(t);
   }, []);
 
@@ -294,14 +307,17 @@ export default function SettingsPage() {
                 onChange={(v) => update("WEWE_RSS_AUTH_CODE", v)}
               />
             </div>
-            <p style={{ ...muted, marginTop: 8, maxWidth: 720 }}>
-              与 news-monitor 的 <code style={{ fontSize: 12 }}>.env</code> 不同，WeWe 网页会把登录码存进<strong>该域名下的</strong>{" "}
-              <code style={{ fontSize: 12 }}>localStorage.authCode</code>，并在每个请求里作为{" "}
-              <code style={{ fontSize: 12 }}>Authorization</code> 头发给后端；其中只要混入 BOM、中文、弯引号等就会整页报错。处理：在 WeWe
-              打开的页面上按 F12 → Application（应用）→ Local Storage → 选中 WeWe 的源站 → 删除键{" "}
-              <code style={{ fontSize: 12 }}>authCode</code> 或「清除站点数据」→ 刷新后重新登录，且口令必须与容器一致、仅 ASCII。本页保存的{" "}
-              <code style={{ fontSize: 12 }}>WEWE_RSS_AUTH_CODE</code> 只影响 Worker 拉 Atom，不会自动改掉浏览器里的 WeWe 缓存。
-            </p>
+            <details style={{ marginTop: 8, maxWidth: 760 }}>
+              <summary style={{ cursor: "pointer", color: "#8fa1c3", fontSize: 12 }}>查看 WeWe 常见报错说明</summary>
+              <p style={{ ...muted, marginTop: 8 }}>
+                与 news-monitor 的 <code style={{ fontSize: 12 }}>.env</code> 不同，WeWe 网页会把登录码存进<strong>该域名下的</strong>{" "}
+                <code style={{ fontSize: 12 }}>localStorage.authCode</code>，并在每个请求里作为{" "}
+                <code style={{ fontSize: 12 }}>Authorization</code> 头发给后端；其中只要混入 BOM、中文、弯引号等就会整页报错。处理：在 WeWe
+                打开的页面上按 F12 → Application（应用）→ Local Storage → 选中 WeWe 的源站 → 删除键{" "}
+                <code style={{ fontSize: 12 }}>authCode</code> 或「清除站点数据」→ 刷新后重新登录，且口令必须与容器一致、仅 ASCII。本页保存的{" "}
+                <code style={{ fontSize: 12 }}>WEWE_RSS_AUTH_CODE</code> 只影响 Worker 拉 Atom，不会自动改掉浏览器里的 WeWe 缓存。
+              </p>
+            </details>
             <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
               {form.RSSHUB_BASE && (
                 <a href={form.RSSHUB_BASE} target="_blank" rel="noreferrer" style={linkBtn}>
@@ -322,6 +338,18 @@ export default function SettingsPage() {
               <div style={muted}>暂无运行数据</div>
             ) : (
               <>
+                {failureHighlights.length > 0 ? (
+                  <div style={{ ...errorStyle, marginBottom: 10 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>最近失败摘要（优先处理）</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {failureHighlights.map((f) => (
+                        <li key={`${f.name}:${f.row.jobId}`}>
+                          <strong>{f.name}</strong>：{f.row.failedReason || "unknown error"}（job={f.row.jobId || "n/a"}）
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
                 <div style={statusRow}>
                   <div>Redis: {dot(system.env.redis.ok)}</div>
                   <div>RSSHub: {dot(system.env.rsshub.ok)}</div>
