@@ -9,11 +9,13 @@ export function Drawer({
   open,
   onClose,
   title,
+  width,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title?: string;
+  width?: number;
   children: ReactNode;
 }) {
   useEffect(() => {
@@ -38,6 +40,7 @@ export function Drawer({
           />
           <motion.aside
             className="nm-drawer"
+            style={width ? { width: `${Math.max(360, Math.min(width, 1100))}px` } : undefined}
             initial={{ x: "100%" }}
             animate={{ x: 0 }}
             exit={{ x: "100%" }}

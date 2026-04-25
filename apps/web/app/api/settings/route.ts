@@ -10,10 +10,13 @@ const ENV_KEYS = [
   "RSSHUB_BASE",
   "WEWE_RSS_BASE",
   "WEWE_RSS_AUTH_CODE",
+  "AI_MODE",
   "LLM_BASE_URL",
   "LLM_API_KEY",
   "LLM_CHAT_MODEL",
   "LLM_EMBEDDING_MODEL",
+  "LLM_CONCURRENCY",
+  "LLM_DAILY_REQUEST_BUDGET",
 ] as const;
 
 const URL_KEYS = new Set(["DATABASE_URL", "REDIS_URL", "RSSHUB_BASE", "WEWE_RSS_BASE", "LLM_BASE_URL"]);
@@ -68,6 +71,25 @@ function maskUrl(raw: string | undefined) {
   }
 }
 
+function redactUrlForEditing(raw: string | undefined) {
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    if (u.username || u.password) {
+      u.username = "***";
+      u.password = "***";
+      return u.toString();
+    }
+    return raw;
+  } catch {
+    return raw;
+  }
+}
+
+function isRedactedUrlValue(raw: string | undefined) {
+  return Boolean(raw && raw.includes("***"));
+}
+
 function validateValues(values: Record<string, string | undefined>) {
   for (const [key, raw] of Object.entries(values)) {
     if (!ENV_KEYS.includes(key as (typeof ENV_KEYS)[number])) {
@@ -75,6 +97,10 @@ function validateValues(values: Record<string, string | undefined>) {
     }
     if (raw == null || raw.trim() === "") continue;
     const value = raw.trim();
+    if (key === "AI_MODE" && !["core", "llm", "agent"].includes(value)) {
+      throw new Error("AI_MODE must be core, llm, or agent");
+    }
+    if (URL_KEYS.has(key) && isRedactedUrlValue(value)) continue;
     if (URL_KEYS.has(key)) {
       try {
         new URL(value);
@@ -104,14 +130,17 @@ export async function GET() {
   const payload = {
     version: checksum(content),
     values: {
-      DATABASE_URL: map.get("DATABASE_URL") ?? "",
-      REDIS_URL: map.get("REDIS_URL") ?? "",
+      DATABASE_URL: redactUrlForEditing(map.get("DATABASE_URL")),
+      REDIS_URL: redactUrlForEditing(map.get("REDIS_URL")),
       RSSHUB_BASE: map.get("RSSHUB_BASE") ?? "",
       WEWE_RSS_BASE: map.get("WEWE_RSS_BASE") ?? "",
       WEWE_RSS_AUTH_CODE: sanitizeWeWeAuthCode(map.get("WEWE_RSS_AUTH_CODE") ?? ""),
+      AI_MODE: map.get("AI_MODE") ?? "core",
       LLM_BASE_URL: map.get("LLM_BASE_URL") ?? "",
       LLM_CHAT_MODEL: map.get("LLM_CHAT_MODEL") ?? "",
       LLM_EMBEDDING_MODEL: map.get("LLM_EMBEDDING_MODEL") ?? "",
+      LLM_CONCURRENCY: map.get("LLM_CONCURRENCY") ?? "2",
+      LLM_DAILY_REQUEST_BUDGET: map.get("LLM_DAILY_REQUEST_BUDGET") ?? "500",
     },
     secure: {
       llmApiKeySet: !!map.get("LLM_API_KEY"),
@@ -190,6 +219,15 @@ export async function PUT(request: Request) {
   }
 
   const lines = parseEnvLines(content);
+  for (const line of lines) {
+    if (
+      line.type === "key" &&
+      URL_KEYS.has(line.key) &&
+      isRedactedUrlValue(updates[line.key])
+    ) {
+      delete updates[line.key];
+    }
+  }
   const handled = new Set<string>();
   const rendered = lines.map((line) => {
     if (line.type !== "key") return line.raw;
@@ -209,7 +247,9 @@ export async function PUT(request: Request) {
 
   const nextContent = `${rendered.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd()}\n`;
   try {
-    const backupPath = `${ENV_PATH}.backup.${Date.now()}`;
+    const backupDir = path.resolve(process.cwd(), "..", "..", "backups", "env");
+    await fs.mkdir(backupDir, { recursive: true });
+    const backupPath = path.join(backupDir, `.env.backup.${Date.now()}`);
     await fs.writeFile(backupPath, content, "utf-8");
     const fresh = await fs.stat(ENV_PATH);
     if (fresh.mtimeMs !== st.mtimeMs || fresh.size !== st.size) {

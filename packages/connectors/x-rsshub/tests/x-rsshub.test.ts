@@ -54,4 +54,35 @@ describe("xRsshubConnector", () => {
     expect(items[0].externalId).toBe("tw1");
     expect(items[0].title).toBe("tweet title");
   });
+
+  it("extracts structured X engagement metrics when the feed includes them", async () => {
+    parseURLMock.mockResolvedValue({
+      items: [
+        {
+          guid: "tw2",
+          title: "DeepSeek-V4 launch",
+          content:
+            "Replies 7 Retweets 18 Likes 320 Quotes 4 Views 12800",
+          "dc:creator": "DeepSeek",
+          pubDate: "Fri, 17 Apr 2026 09:00:00 GMT",
+          link: "https://x.com/deepseek_ai/status/2",
+        },
+      ],
+    });
+    const { xRsshubConnector } = await import("../src/index");
+    const { items } = await xRsshubConnector.fetch({
+      source: { id: "s1", config: { handle: "@DeepSeek_AI" } },
+      now: new Date(),
+      signal: new AbortController().signal,
+    });
+
+    expect(items[0].engagement?.x).toEqual({
+      posts: 1,
+      replies: 7,
+      reposts: 18,
+      likes: 320,
+      quotes: 4,
+      views: 12800,
+    });
+  });
 });

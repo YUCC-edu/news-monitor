@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AppearanceProvider } from "@/app/ui/appearance-provider";
 import { ToastProvider } from "@/app/ui/toast-context";
 
 export const metadata: Metadata = {
@@ -13,9 +14,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
       <body>
-        <ToastProvider>{children}</ToastProvider>
+        <AppearanceProvider>
+          <ToastProvider>{children}</ToastProvider>
+        </AppearanceProvider>
       </body>
     </html>
   );

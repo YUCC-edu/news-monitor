@@ -3,19 +3,33 @@
   "version": "0.0.0",
   "private": true,
   "packageManager": "pnpm@9.12.0",
+  "pnpm": {
+    "overrides": {
+      "uuid": "^14.0.0"
+    }
+  },
   "scripts": {
     "dev:web": "pnpm --filter @news/web dev",
     "dev:worker": "pnpm --filter @news/worker dev",
+    "nm": "tsx --env-file=.env scripts/nm-cli.ts",
+    "start:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "start:docker": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -DockerApp",
     "restart:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-web-worker.ps1",
+    "restart:web-worker": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-web-worker.ps1",
+    "stop:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-dev.ps1",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
+    "migrate:check": "pnpm --filter @news/db schema:check",
     "test": "pnpm -r test",
+    "audit:prod": "pnpm audit --prod --audit-level=high",
+    "check": "pnpm -r lint && pnpm migrate:check && pnpm -r test && pnpm -r build",
     "queue:inspect": "tsx --env-file=.env scripts/inspect-queue-failures.ts",
     "queue:retry-fetch": "tsx --env-file=.env scripts/retry-fetch-failed.ts",
     "queue:retry-enrich": "tsx --env-file=.env scripts/retry-enrich-failed.ts",
     "quality:eval": "tsx --env-file=.env scripts/evaluate-cluster-quality.ts"
   },
   "devDependencies": {
+    "@news/engine": "workspace:*",
     "typescript": "^5.6.3",
     "tsx": "^4.19.2"
   }

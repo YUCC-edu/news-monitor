@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { deleteSource, resetSourceFirstFetch, upsertSource } from "@news/db";
+import { deleteSource, resetSourceFirstFetch } from "@news/db";
+import { executeCapability } from "@news/engine";
 import { createLogger } from "@news/shared";
 import Redis from "ioredis";
 import { enqueueFetchSource } from "@/lib/fetch-source-queue";
@@ -17,20 +18,31 @@ export async function PATCH(request: Request, { params }: Params) {
     kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
     name: string;
     config: unknown;
+    scope?: "public_seed" | "personal";
     enabled?: boolean;
     fetchIntervalSec?: number;
     initialFetchDays?: number | null;
     maxItemAgeDays?: number | null;
   };
-  const updated = await upsertSource({ id, ...body });
-  if (!updated) {
-    log.warn("source patch not found", { sourceId: id });
-    return NextResponse.json({ error: "source not found" }, { status: 404 });
+  const result = await executeCapability("sources.update", { id, ...body, scope: body.scope });
+  if (!result.ok) {
+    if (result.error.code === "not_found") {
+      log.warn("source patch not found", { sourceId: id });
+      return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 404 });
+    }
+    if (result.error.code === "conflict") {
+      log.warn("source patch conflict", { sourceId: id });
+      return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 409 });
+    }
+    log.warn("source patch rejected", { sourceId: id, kind: body.kind, message: result.error.message });
+    return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 400 });
   }
-  if ("conflict" in updated) {
-    log.warn("source patch conflict", { sourceId: id, existingId: updated.existing.id });
-    return NextResponse.json({ existing: updated.existing }, { status: 409 });
+  const payload = result.data as { conflict?: boolean; existing?: { id?: string }; source?: { kind: string } };
+  if (payload.conflict) {
+    log.warn("source patch conflict", { sourceId: id, existingId: payload.existing?.id });
+    return NextResponse.json({ existing: payload.existing }, { status: 409 });
   }
+  const updated = payload.source as { kind: string };
   await redis.publish("sources.changed", JSON.stringify({ op: "upsert", id }));
   await enqueueFetchSource(id);
   log.info("source updated", { sourceId: id, latencyMs: Date.now() - t0, kind: updated.kind });

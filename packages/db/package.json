@@ -10,18 +10,20 @@
   },
   "scripts": {
     "generate": "drizzle-kit generate",
+    "schema:check": "drizzle-kit check --config=drizzle.config.ts",
     "migrate": "tsx --env-file=../../.env src/migrate.ts",
     "lint": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "drizzle-orm": "^0.36.4",
+    "@news/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "dotenv": "^16.4.5",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
-    "drizzle-kit": "^0.28.1",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"

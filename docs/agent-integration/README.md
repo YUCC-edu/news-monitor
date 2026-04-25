@@ -1,41 +1,164 @@
 # Agent Integration
 
-This project exposes a stable, low-privilege capability layer for external agents.
+`news-monitor` 现在对外暴露的是稳定能力层，而不是“网页里的聊天功能”。
 
-## Tool Endpoints
+推荐的接入优先级：
+1. `nm` CLI
+2. HTTP capability endpoints
+3. 兼容型 tool endpoints
 
-- `GET /api/agent/search-items?q=...&limit=20&sort=published|fetched`
-  - Tool name: `search_items`
-  - Purpose: search timeline items with unified shape for agent consumption.
-- `GET /api/agent/list-trending-clusters?limit=20`
-  - Tool name: `list_trending_clusters`
-  - Purpose: list curated cluster representatives and related source counts.
+## 1. Capability Discovery
+
+```http
+GET /api/agent/capabilities
+```
+
+返回当前支持的能力清单，例如：
+- `sources.list`
+- `sources.add`
+- `sources.update`
+- `sources.fetch`
+- `sources.importPreset`
+- `items.search`
+- `clusters.list`
+- `clusters.siblings`
+- `hotspots.list`
+- `hotspots.explain`
+- `stats.overview`
+- `health.sources`
+- `queue.status`
+- `ops.reenrich`
+- `ai.status`
+- `system.status`
+
+## 2. Generic Execute Endpoint
+
+```http
+POST /api/agent/exec
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "capability": "hotspots.list",
+  "input": {
+    "range": "7d",
+    "limit": 10
+  }
+}
+```
+
+成功返回：
+
+```json
+{
+  "ok": true,
+  "capability": "hotspots.list",
+  "data": {
+    "total": 10,
+    "hotspots": []
+  }
+}
+```
+
+失败返回统一结构：
+
+```json
+{
+  "ok": false,
+  "capability": "sources.add",
+  "error": {
+    "code": "invalid_input",
+    "message": "feedUrl is required",
+    "recoveryHint": "Check the capability input schema and retry with valid arguments."
+  }
+}
+```
+
+写操作能力需要携带：
+- `x-assistant-role: assistant_write_low`
+- `x-assistant-key: <ASSISTANT_API_KEY>`
+
+## 3. CLI-first Examples
+
+### Shell
+
+```powershell
+corepack pnpm nm -- hotspots list --range 7d --limit 10 --json
+corepack pnpm nm -- hotspots explain --cluster-id "<cluster-id>" --json
+corepack pnpm nm -- ai status --json
+corepack pnpm nm -- queue status --json
+corepack pnpm nm -- stats overview --range 30d --json
+corepack pnpm nm -- sources import-preset --preset ai-high-signal --fetch --json
+corepack pnpm nm -- sources add --kind rss --name "Reuters Tech" --url "https://feeds.reuters.com/reuters/technologyNews"
+```
+
+### curl
+
+```bash
+curl -s http://localhost:3000/api/agent/capabilities
+
+curl -s http://localhost:3000/api/agent/exec \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "capability": "items.search",
+    "input": { "q": "OpenAI", "limit": 5, "range": "7d" }
+  }'
+```
+
+### Node.js
+
+```ts
+const response = await fetch("http://localhost:3000/api/agent/exec", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    capability: "clusters.list",
+    input: { range: "7d", limit: 5, minSources: 2 },
+  }),
+});
+
+const result = await response.json();
+console.log(result);
+```
+
+### Python
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:3000/api/agent/exec",
+    json={
+        "capability": "system.status",
+        "input": {}
+    },
+    timeout=30,
+)
+
+print(resp.json())
+```
+
+## 4. Compatible Tool Endpoints
+
+这些 endpoint 继续保留，用于兼容已有 agent/tool 配置：
+
+- `GET /api/agent/search-items`
+- `GET /api/agent/list-trending-clusters`
 - `GET /api/agent/list-source-health`
-  - Tool name: `list_source_health`
-  - Purpose: retrieve source runtime health and remediation hints.
+- `GET /api/agent/stats-report`
+- `POST /api/agent/add-source`
+- `POST /api/agent/trigger-fetch-source`
 - `POST /api/agent/trigger-reenrich`
-  - Tool name: `trigger_reenrich`
-  - Purpose: trigger controlled re-enrich operations.
-  - Request body:
-    ```json
-    {
-      "scope": "source | window | item",
-      "sourceId": "uuid (optional for source scope)",
-      "itemId": "uuid (optional for item scope)",
-      "since": "ISO timestamp (optional for window scope)",
-      "until": "ISO timestamp (optional for window scope)",
-      "limit": 100
-    }
-    ```
 
-## Security and Access
+但新的集成建议优先走 `capabilities + exec`，这样更接近稳定 contract，也更方便未来扩展 MCP。
 
-- Prefer read-only tools (`search_items`, `list_trending_clusters`, `list_source_health`) for default agent profiles.
-- Grant `trigger_reenrich` only to elevated agent identities.
-- Apply reverse-proxy auth and request auditing in production.
+## 5. Integration Guidance
 
-## Skills Packaging Notes
-
-- Claude Code / Codex / OpenClaw can consume these endpoints as HTTP tools.
-- Keep tool contracts stable; add new optional fields instead of breaking required keys.
-- Return structured remediation fields on failures for deterministic recovery behavior.
+- 把 `news-monitor` 当成情报引擎，而不是网页机器人
+- 优先消费结构化 JSON，不要依赖页面文案
+- 读能力默认开放，写能力显式授权
+- CLI 和 HTTP 返回的数据形状尽量保持一致
+- 新增能力时优先扩展 contract，而不是单独再造一个聊天专用接口

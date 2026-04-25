@@ -7,15 +7,22 @@
     "dev": "node scripts/run-next-with-root-env.mjs dev",
     "build": "node scripts/run-next-with-root-env.mjs build",
     "start": "node scripts/run-next-with-root-env.mjs start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings=0",
     "test": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",
     "@fontsource/jetbrains-mono": "^5.2.8",
+    "@news/ai": "workspace:*",
+    "@news/connectors-core": "workspace:*",
+    "@news/connectors-hn": "workspace:*",
+    "@news/connectors-rss": "workspace:*",
+    "@news/connectors-wechat-wewe": "workspace:*",
+    "@news/connectors-x-rsshub": "workspace:*",
     "@news/db": "workspace:*",
+    "@news/engine": "workspace:*",
     "@news/shared": "workspace:*",
-    "bullmq": "^5.58.0",
+    "bullmq": "^5.76.1",
     "framer-motion": "^12.38.0",
     "ioredis": "^5.8.1",
     "next": "^15.0.3",
@@ -24,9 +31,12 @@
     "recharts": "^3.8.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.1",
     "@types/node": "^22.7.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "eslint": "^9.39.1",
+    "eslint-config-next": "^15.5.15",
     "typescript": "^5.6.3"
   }
 }

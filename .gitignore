@@ -2,8 +2,15 @@ node_modules/
 .next/
 dist/
 .env
+.env.*
+!.env.example
 .env.local
+.env.backup.*
 *.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 .DS_Store
 backups/
 docker/.data/

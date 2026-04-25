@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import Parser from "rss-parser";
-import { coerceRssIdField, type Connector, type ConnectorFetchResult, type NormalizedItem } from "@news/connectors-core";
+import {
+  coerceRssIdField,
+  type Connector,
+  type ConnectorFetchResult,
+  type NormalizedItem,
+  type XEngagementMetrics,
+} from "@news/connectors-core";
 
 type XRsshubConfig = {
   handle: string;
@@ -64,7 +70,44 @@ function parsePublishedAt(item: RssItem) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
+function extractMetric(text: string, labels: string[]) {
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patterns = [
+      new RegExp(`${escaped}\\s*[:：]?\\s*([\\d,.]+)`, "i"),
+      new RegExp(`([\\d,.]+)\\s*${escaped}`, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (!match) continue;
+      const value = Number.parseInt(match[1].replace(/[^\d]/g, ""), 10);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return undefined;
+}
+
+function extractXEngagement(item: RssItem): XEngagementMetrics | undefined {
+  const haystack = [item.title, item.contentSnippet, item.content, item.summary]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+  if (!haystack) return undefined;
+  const metrics: XEngagementMetrics = {
+    posts: 1,
+    replies: extractMetric(haystack, ["Replies", "Reply", "评论", "回复"]),
+    reposts: extractMetric(haystack, ["Retweets", "Retweet", "Reposts", "Repost", "转推", "转发"]),
+    likes: extractMetric(haystack, ["Likes", "Like", "点赞", "喜欢"]),
+    quotes: extractMetric(haystack, ["Quotes", "Quote", "引用"]),
+    views: extractMetric(haystack, ["Views", "View", "浏览", "查看"]),
+  };
+  const hasMeaningfulMetric = Object.entries(metrics).some(
+    ([key, value]) => key !== "posts" && typeof value === "number" && value > 0,
+  );
+  return hasMeaningfulMetric ? metrics : undefined;
+}
+
 function toNormalized(item: RssItem): NormalizedItem {
+  const engagement = extractXEngagement(item);
   return {
     externalId: resolveExternalId(item),
     url: item.link,
@@ -72,6 +115,7 @@ function toNormalized(item: RssItem): NormalizedItem {
     title: item.title,
     contentText: item.contentSnippet ?? item.content ?? item.summary,
     publishedAt: parsePublishedAt(item),
+    engagement: engagement ? { x: engagement } : undefined,
     raw: item,
   };
 }

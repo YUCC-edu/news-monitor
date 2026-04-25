@@ -9,6 +9,7 @@ import { Card } from "@/app/ui/card";
 import { Chip } from "@/app/ui/chip";
 import { Skeleton } from "@/app/ui/skeleton";
 import { SourceAvatar } from "@/app/ui/source-avatar";
+import { readJsonResponse } from "@/lib/read-json-response";
 
 type CategoryDimension = "domain" | "topic" | "entity";
 type MatchMode = "all" | "any";
@@ -71,10 +72,12 @@ function CategoriesPageInner() {
     setLoadErr(null);
     try {
       const qs = new URLSearchParams({ limit: "120", taxonomyOnly: "1", sort: "published" });
-      const data = (await fetch(`/api/items?${qs.toString()}`).then((r) => r.json())) as TimelineItem[];
-      setItems(data);
+      const res = await fetch(`/api/items?${qs.toString()}`);
+      const data = await readJsonResponse<unknown>(res, "/api/items");
+      setItems(Array.isArray(data) ? (data as TimelineItem[]) : []);
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : "分类加载失败");
+      setItems([]);
     } finally {
       setLoading(false);
     }
@@ -103,9 +106,9 @@ function CategoriesPageInner() {
     };
   }, [load]);
 
-  const selectedKey = useMemo(() => selected.join("||"), [selected]);
   const valuesByItem = useMemo(() => {
-    return items.map((item) => {
+    const safeItems = Array.isArray(items) ? items : [];
+    return safeItems.map((item) => {
       if (dimension === "domain") return item.categoryDomain ?? [];
       if (dimension === "topic") return item.categoryTopic ?? [];
       return item.categoryEntity ?? [];
@@ -145,7 +148,7 @@ function CategoriesPageInner() {
       if (matchMode === "all") return selected.every((v) => values.includes(v));
       return selected.some((v) => values.includes(v));
     });
-  }, [dimension, items, matchMode, selectedKey]);
+  }, [dimension, items, matchMode, selected]);
 
   function toggle(tag: string) {
     setSelected((prev) =>
@@ -238,10 +241,10 @@ function CategoriesPageInner() {
             实体
           </Button>
           <Button variant={matchMode === "all" ? "primary" : "ghost"} size="sm" onClick={() => setMatchMode("all")}>
-            AND
+            全部满足
           </Button>
           <Button variant={matchMode === "any" ? "primary" : "ghost"} size="sm" onClick={() => setMatchMode("any")}>
-            OR
+            任一满足
           </Button>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>

@@ -34,6 +34,7 @@ export const sources = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     kind: text("kind").notNull(), // 'rss' | 'hn' | 'x-rsshub'
     name: text("name").notNull(),
+    scope: text("scope").notNull().default("personal"), // 'public_seed' | 'personal'
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
     enabled: boolean("enabled").notNull().default(true),
     fetchIntervalSec: integer("fetch_interval_sec").notNull().default(300),
@@ -52,6 +53,7 @@ export const sources = pgTable(
   },
   (t) => ({
     kindIdx: index("sources_kind_idx").on(t.kind),
+    scopeIdx: index("sources_scope_idx").on(t.scope),
     enabledIdx: index("sources_enabled_idx").on(t.enabled),
   }),
 );
@@ -91,6 +93,16 @@ export const items = pgTable(
 export const clusters = pgTable("clusters", {
   id: uuid("id").primaryKey().defaultRandom(),
   topic: text("topic"),
+  topicSource: text("topic_source").notNull().default("rules"),
+  hotspotScore: integer("hotspot_score").notNull().default(0),
+  distinctSources: integer("distinct_sources").notNull().default(0),
+  weightedDistinctSources: integer("weighted_distinct_sources").notNull().default(0),
+  crossPlatformScore: integer("cross_platform_score").notNull().default(0),
+  breakingScore: integer("breaking_score").notNull().default(0),
+  consensusScore: integer("consensus_score").notNull().default(0),
+  burstVelocity: integer("burst_velocity").notNull().default(0),
+  xSignalScore: integer("x_signal_score").notNull().default(0),
+  hnSignalScore: integer("hn_signal_score").notNull().default(0),
   /** Running-average embedding for nearest-cluster retrieval (optional until backfilled). */
   centroidEmbedding: vector1024("centroid_embedding"),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
@@ -128,6 +140,9 @@ export const itemEnrichments = pgTable(
       .notNull()
       .default(sql`'{}'::text[]`),
     embedding: vector1024("embedding"),
+    enrichmentSource: text("enrichment_source").notNull().default("rules"),
+    enrichmentVersion: text("enrichment_version").notNull().default("rules-v1"),
+    platformMetrics: jsonb("platform_metrics").notNull().default(sql`'{}'::jsonb`),
     clusterId: uuid("cluster_id").references(() => clusters.id, {
       onDelete: "set null",
     }),
@@ -187,9 +202,33 @@ export const favorites = pgTable(
   }),
 );
 
+export const assistantActions = pgTable(
+  "assistant_actions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    requestId: text("request_id").notNull(),
+    actor: text("actor").notNull(),
+    role: text("role").notNull().default("assistant_read"),
+    tool: text("tool").notNull(),
+    status: text("status").notNull(),
+    inputSummary: text("input_summary"),
+    outputSummary: text("output_summary"),
+    errorMessage: text("error_message"),
+    latencyMs: integer("latency_ms"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index("assistant_actions_request_idx").on(t.requestId),
+    createdIdx: index("assistant_actions_created_idx").on(t.createdAt),
+    toolIdx: index("assistant_actions_tool_idx").on(t.tool),
+  }),
+);
+
 export type Source = typeof sources.$inferSelect;
 export type NewSource = typeof sources.$inferInsert;
+export type SourceScope = "public_seed" | "personal";
 export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
 export type Cluster = typeof clusters.$inferSelect;
 export type ItemEnrichment = typeof itemEnrichments.$inferSelect;
+export type AssistantAction = typeof assistantActions.$inferSelect;

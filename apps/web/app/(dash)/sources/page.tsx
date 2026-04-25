@@ -1,5 +1,6 @@
-"use client";
+﻿"use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/app/ui/button";
 import { Card } from "@/app/ui/card";
@@ -14,10 +15,12 @@ import { useToast } from "@/app/ui/toast-context";
 import { readJsonResponse } from "@/lib/read-json-response";
 
 type SourceKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+type SourceScope = "public_seed" | "personal";
 
 type SourceRow = {
   id: string;
   kind: SourceKind;
+  scope: SourceScope;
   name: string;
   config: Record<string, unknown>;
   enabled: boolean;
@@ -27,14 +30,55 @@ type SourceRow = {
   lastOkAt: string | null;
   lastError: string | null;
   failCount: number;
+  pipeline24hRate: number | null;
+  totalItemsAllTime: number;
+  items24h: number;
+  items7d: number;
+  enriched24h: number;
+  clusters7d: number;
+  consensusClusters7d: number;
+  singleSourceClusters7d: number;
+  avgSourcesPerCluster7d: number;
+  avgItemsPerCluster7d: number;
+  maxSourcesInCluster7d: number;
+  consensusClusterRate7d: number | null;
+  noiseRatio7d: number | null;
+  qualityScore: number;
+  qualityTier: "high" | "medium" | "low";
 };
 
 const kindLabels: Record<SourceKind, string> = {
   rss: "RSS",
-  hn: "Hacker News",
-  "x-rsshub": "X (RSSHub)",
-  "wechat-wewe": "公众号 (WeWe-RSS)",
+  hn: "黑客新闻",
+  "x-rsshub": "X（RSSHub）",
+  "wechat-wewe": "公众号（WeWe-RSS）",
 };
+
+const qualityTierLabels: Record<SourceRow["qualityTier"], string> = {
+  high: "高价值",
+  medium: "可用",
+  low: "待复查",
+};
+
+const scopeLabels: Record<SourceScope, string> = {
+  public_seed: "公共雷达",
+  personal: "我的源",
+};
+
+function formatRate(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatCount(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "0";
+  return `${Math.round(value)}`;
+}
+
+function formatFixed(value: number | null | undefined, digits = 2) {
+  if (value == null || Number.isNaN(value)) return "—";
+  return value.toFixed(digits);
+}
 
 type DupGroup = {
   kind: string;
@@ -60,7 +104,7 @@ type PresetImportResult = {
   failed: Array<{ name: string; reason: string }>;
 };
 
-type SourcePresetCategory = "hotspot" | "research" | "nursing" | "evidence" | "policy";
+type SourcePresetCategory = "hotspot" | "research";
 
 type PresetItem = {
   id: string;
@@ -84,11 +128,61 @@ type PresetPack = {
   items: PresetItem[];
 };
 
+type PresetSection = "high-signal-ai" | "industry" | "official" | "research";
+
+const PRESET_SECTION_META: Record<
+  PresetSection,
+  { label: string; description: string }
+> = {
+  "high-signal-ai": {
+    label: "高信号 AI",
+    description: "主打高共识、适合追值得关注事件的核心信源",
+  },
+  industry: {
+    label: "行业新闻",
+    description: "覆盖产品、公司、市场与平台动态",
+  },
+  official: {
+    label: "官方发布",
+    description: "实验室、平台和厂商的一手公告",
+  },
+  research: {
+    label: "研究前沿",
+    description: "论文、方法和研究进展",
+  },
+};
+
+function getPresetSection(packKey: string, item: PresetItem): PresetSection {
+  void packKey;
+  if (
+    item.id === "openai-news" ||
+    item.id === "deepmind-blog" ||
+    item.id === "huggingface-blog" ||
+    item.id === "microsoft-ai-blog" ||
+    item.id === "google-ai-blog" ||
+    item.id === "nvidia-developer-ai"
+  ) {
+    return "official";
+  }
+  if (item.id.startsWith("arxiv-")) return "research";
+  if (item.id === "hn-ai") return "high-signal-ai";
+  if (
+    item.id === "techcrunch-ai" ||
+    item.id === "theverge-ai" ||
+    item.id === "wired-ai" ||
+    item.id === "venturebeat-ai"
+  ) {
+    return "industry";
+  }
+  return "high-signal-ai";
+}
+
 export default function SourcesPage() {
   const toast = useToast();
   const [rows, setRows] = useState<SourceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [scopeFilter, setScopeFilter] = useState<"all" | SourceScope>("all");
   const [kind, setKind] = useState<SourceKind>("rss");
   const [name, setName] = useState("");
   const [interval, setIntervalSec] = useState(300);
@@ -103,13 +197,12 @@ export default function SourcesPage() {
   const [dedupHint, setDedupHint] = useState<SourceRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [importingPreset, setImportingPreset] = useState(false);
-  const [lastImportResult, setLastImportResult] = useState<PresetImportResult | null>(null);
-  const [importResultOpen, setImportResultOpen] = useState(false);
   const [presetCenterOpen, setPresetCenterOpen] = useState(false);
   const [presetCatalogLoading, setPresetCatalogLoading] = useState(false);
   const [presetPacks, setPresetPacks] = useState<PresetPack[]>([]);
   const [presetPackFilter, setPresetPackFilter] = useState<string[]>([]);
   const [presetCategoryFilter, setPresetCategoryFilter] = useState<"all" | SourcePresetCategory>("all");
+  const [presetSectionFilter, setPresetSectionFilter] = useState<"all" | PresetSection>("all");
   const [presetSearch, setPresetSearch] = useState("");
   const [presetChecked, setPresetChecked] = useState<Record<string, boolean>>({});
   const [conflictOpen, setConflictOpen] = useState(false);
@@ -179,6 +272,7 @@ export default function SourcesPage() {
         body: JSON.stringify({
           kind,
           name: name || `${kindLabels[kind]} ${new Date().toLocaleTimeString()}`,
+          scope: "personal",
           config,
           fetchIntervalSec: interval,
           enabled: true,
@@ -202,28 +296,6 @@ export default function SourcesPage() {
       await load();
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function importPresetSources() {
-    setImportingPreset(true);
-    try {
-      const res = await fetch("/api/sources/import-presets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presetKey: "ai-hotspot-research", enabled: true }),
-      });
-      const data = await readJsonResponse<PresetImportResult>(res, "/api/sources/import-presets");
-      setLastImportResult(data);
-      setImportResultOpen(true);
-      toast(
-        `预设导入完成：新增 ${data.createdCount}，已存在 ${data.conflictCount}，失败 ${data.failedCount}`,
-      );
-      await load();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e));
-    } finally {
-      setImportingPreset(false);
     }
   }
 
@@ -254,11 +326,19 @@ export default function SourcesPage() {
   const presetList = useMemo(() => {
     const q = presetSearch.trim().toLowerCase();
     const activePack = new Set(presetPackFilter);
-    const out: Array<{ key: string; packKey: string; packLabel: string; item: PresetItem }> = [];
+    const out: Array<{
+      key: string;
+      packKey: string;
+      packLabel: string;
+      item: PresetItem;
+      section: PresetSection;
+    }> = [];
     for (const pack of presetPacks) {
       if (activePack.size > 0 && !activePack.has(pack.key)) continue;
       for (const item of pack.items) {
         if (presetCategoryFilter !== "all" && item.category !== presetCategoryFilter) continue;
+        const section = getPresetSection(pack.key, item);
+        if (presetSectionFilter !== "all" && section !== presetSectionFilter) continue;
         if (q) {
           const haystack = [item.name, item.description ?? "", item.category, ...(item.tags ?? [])]
             .join(" ")
@@ -270,16 +350,27 @@ export default function SourcesPage() {
           packKey: pack.key,
           packLabel: pack.label,
           item,
+          section,
         });
       }
     }
     return out.sort((a, b) => (b.item.priority ?? 0) - (a.item.priority ?? 0));
-  }, [presetPacks, presetPackFilter, presetCategoryFilter, presetSearch]);
+  }, [presetPacks, presetPackFilter, presetCategoryFilter, presetSectionFilter, presetSearch]);
 
   const selectedPresetItems = useMemo(() => {
     const picked = new Set(Object.entries(presetChecked).filter(([, on]) => on).map(([k]) => k));
     return presetList.filter((row) => picked.has(row.key));
   }, [presetChecked, presetList]);
+
+  const presetSectionRows = useMemo(() => {
+    const order: PresetSection[] = ["high-signal-ai", "industry", "official", "research"];
+    return order
+      .map((section) => ({
+        section,
+        items: presetList.filter((row) => row.section === section),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [presetList]);
 
   async function importSelectedPresetItems() {
     if (selectedPresetItems.length === 0) {
@@ -298,8 +389,6 @@ export default function SourcesPage() {
         }),
       });
       const data = await readJsonResponse<PresetImportResult>(res, "/api/sources/import-presets");
-      setLastImportResult(data);
-      setImportResultOpen(true);
       setPresetCenterOpen(false);
       toast(
         `导入完成：请求 ${data.requestedCount ?? selectedPresetItems.length}，新增 ${data.createdCount}，冲突 ${data.conflictCount}，失败 ${data.failedCount}`,
@@ -371,13 +460,14 @@ export default function SourcesPage() {
     const res = await fetch(`/api/sources/${drawerSource.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        kind: drawerSource.kind,
-        name: patch.name ?? drawerSource.name,
-        config: patch.config ?? drawerSource.config,
-        enabled: patch.enabled ?? drawerSource.enabled,
-        fetchIntervalSec: patch.fetchIntervalSec ?? drawerSource.fetchIntervalSec,
-        initialFetchDays: patch.initialFetchDays ?? drawerSource.initialFetchDays,
+        body: JSON.stringify({
+          kind: drawerSource.kind,
+          name: patch.name ?? drawerSource.name,
+          scope: patch.scope ?? drawerSource.scope,
+          config: patch.config ?? drawerSource.config,
+          enabled: patch.enabled ?? drawerSource.enabled,
+          fetchIntervalSec: patch.fetchIntervalSec ?? drawerSource.fetchIntervalSec,
+          initialFetchDays: patch.initialFetchDays ?? drawerSource.initialFetchDays,
         maxItemAgeDays: patch.maxItemAgeDays ?? drawerSource.maxItemAgeDays,
       }),
     });
@@ -395,26 +485,146 @@ export default function SourcesPage() {
     setDrawerSource(updated);
   }
 
+  const sourceSummary = useMemo(() => {
+    const enabled = rows.filter((row) => row.enabled).length;
+    const healthy = rows.filter((row) => row.enabled && row.failCount === 0 && !row.lastError).length;
+    const failing = rows.filter((row) => row.failCount > 0 || row.lastError).length;
+    const rss = rows.filter((row) => row.kind === "rss").length;
+    return { total: rows.length, enabled, healthy, failing, rss };
+  }, [rows]);
+
+  const qualitySummary = useMemo(() => {
+    const high = rows.filter((row) => row.qualityTier === "high").length;
+    const consensusLeaders = rows.filter((row) => (row.consensusClusters7d ?? 0) >= 2).length;
+    const noisy = rows.filter(
+      (row) => (row.noiseRatio7d ?? 0) >= 0.65 && (row.clusters7d ?? 0) >= 3,
+    ).length;
+    const review = rows.filter(
+      (row) => row.qualityTier === "low" || row.failCount > 0 || Boolean(row.lastError),
+    ).length;
+    const avgScore = rows.length
+      ? Math.round(rows.reduce((sum, row) => sum + (row.qualityScore ?? 0), 0) / rows.length)
+      : 0;
+    return { high, consensusLeaders, noisy, review, avgScore };
+  }, [rows]);
+
+  const visibleRows = useMemo(() => {
+    return rows.filter((row) => {
+      if (scopeFilter === "all") return true;
+      return row.scope === scopeFilter;
+    });
+  }, [rows, scopeFilter]);
+
   return (
-    <div>
-      <header
+    <div style={{ display: "grid", gap: 16 }}>
+      <section
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          marginBottom: 16,
-          flexWrap: "wrap",
+          display: "grid",
+          gap: 16,
+          padding: 18,
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)",
         }}
       >
-        <h1 className="nm-title">信源管理</h1>
-        <span className="nm-muted">RSS / HN / X / 公众号</span>
-        <Button variant="ghost" size="sm" style={{ marginLeft: "auto" }} onClick={() => void openDuplicates()}>
-          检测重复
-        </Button>
-      </header>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "grid", gap: 6 }}>
+            <div className="nm-muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.4 }}>
+              信源库
+            </div>
+            <h1 className="nm-title" style={{ fontSize: 28, marginBottom: 0 }}>信源库</h1>
+          </div>
+          <Link href="/recommended-sources" style={{ marginLeft: "auto" }}>
+            <Button variant="ghost" size="sm">
+              推荐信源
+            </Button>
+          </Link>
+          <Button variant="ghost" size="sm" onClick={() => void openDuplicates()}>
+            检测重复
+          </Button>
+        </div>
 
-      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[
+            { label: "全部", value: "all" },
+            { label: "公共雷达", value: "public_seed" },
+            { label: "我的源", value: "personal" },
+          ].map((option) => (
+            <Button
+              key={option.value}
+              size="sm"
+              variant={scopeFilter === option.value ? "primary" : "ghost"}
+              onClick={() => setScopeFilter(option.value as "all" | SourceScope)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {[
+            { label: "总信源", value: sourceSummary.total, note: "已经纳入资料库的来源" },
+            { label: "启用中", value: sourceSummary.enabled, note: "当前允许进入抓取链路" },
+            { label: "健康源", value: sourceSummary.healthy, note: "最近无失败积压的来源" },
+            { label: "异常源", value: sourceSummary.failing, note: "需要复查配置或抓取频率" },
+          ].map((metric) => (
+            <Card key={metric.label} style={{ padding: 16, display: "grid", gap: 8 }}>
+              <div className="nm-muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.2 }}>
+                {metric.label}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--fg-0)" }}>{metric.value}</div>
+              <div className="nm-muted" style={{ lineHeight: 1.6 }}>{metric.note}</div>
+            </Card>
+          ))}
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {[
+            { label: "高价值源", value: qualitySummary.high, note: "更容易形成共识的来源" },
+            { label: "共识贡献", value: qualitySummary.consensusLeaders, note: "7 天内参与过多信源事件" },
+            { label: "噪声偏高", value: qualitySummary.noisy, note: "单源簇过多，建议复查" },
+            { label: "平均质量分", value: qualitySummary.avgScore, note: "按覆盖、共识与稳定性综合估算" },
+          ].map((metric) => (
+            <Card key={metric.label} style={{ padding: 16, display: "grid", gap: 8 }}>
+              <div className="nm-muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.2 }}>
+                {metric.label}
+              </div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "var(--fg-0)" }}>{metric.value}</div>
+              <div className="nm-muted" style={{ lineHeight: 1.6 }}>{metric.note}</div>
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <Card style={{ marginBottom: 0 }}>
         <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <h2 className="nm-title" style={{ fontSize: 18, marginTop: 0, marginBottom: 0 }}>新增或导入</h2>
+            </div>
+            <div className="nm-muted" style={{ fontSize: 12, alignSelf: "flex-end" }}>
+              RSS 类来源 {sourceSummary.rss} 个
+            </div>
+          </div>
           <label className="nm-label">
             类型
             <Select value={kind} onChange={(e) => setKind(e.target.value as SourceKind)}>
@@ -552,26 +762,12 @@ export default function SourcesPage() {
             <Button
               disabled={importingPreset}
               variant="ghost"
-              onClick={() => void importPresetSources()}
-            >
-              {importingPreset ? "导入中..." : "导入 AI 热点+科研预设"}
-            </Button>
-            <Button
-              disabled={importingPreset}
-              variant="ghost"
               onClick={() => {
                 setPresetCenterOpen(true);
                 if (presetPacks.length === 0) void loadPresetCatalog();
               }}
             >
-              选择导入预设（推荐）
-            </Button>
-            <Button
-              disabled={!lastImportResult}
-              variant="ghost"
-              onClick={() => setImportResultOpen(true)}
-            >
-              查看最近导入结果
+              {importingPreset ? "导入中..." : "导入预设"}
             </Button>
             <Button disabled={submitting} variant="primary" onClick={() => void addSource()}>
               {submitting ? "创建中..." : "新增信源"}
@@ -581,9 +777,16 @@ export default function SourcesPage() {
       </Card>
 
       <Card>
-        <h2 className="nm-title" style={{ fontSize: 16, marginTop: 0 }}>
-          已有信源
-        </h2>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <h2 className="nm-title" style={{ fontSize: 18, marginTop: 0, marginBottom: 0 }}>
+              资料库
+            </h2>
+          </div>
+          <div className="nm-muted" style={{ fontSize: 12, alignSelf: "flex-end" }}>
+            共 {rows.length} 个来源
+          </div>
+        </div>
         {!bootstrapped && loading ? (
           <div className="nm-table-wrap" aria-busy="true" aria-label="加载中">
             <table className="nm-table">
@@ -593,6 +796,7 @@ export default function SourcesPage() {
                   <th>名称</th>
                   <th>类型</th>
                   <th>间隔</th>
+                  <th>画像</th>
                   <th>状态</th>
                   <th />
                 </tr>
@@ -613,6 +817,9 @@ export default function SourcesPage() {
                       <Skeleton style={{ height: 14, width: 40 }} />
                     </td>
                     <td>
+                      <Skeleton style={{ height: 14, width: 120 }} />
+                    </td>
+                    <td>
                       <Skeleton style={{ height: 14, width: 64 }} />
                     </td>
                     <td>
@@ -629,17 +836,19 @@ export default function SourcesPage() {
           <div className="nm-table-wrap">
             <table className="nm-table">
               <thead>
-              <tr>
-                <th />
-                <th>名称</th>
-                <th>类型</th>
-                <th>间隔</th>
-                <th>状态</th>
-                <th />
-              </tr>
+                <tr>
+                  <th />
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>范围</th>
+                  <th>间隔</th>
+                  <th>画像</th>
+                  <th>状态</th>
+                  <th />
+                </tr>
               </thead>
               <tbody>
-              {rows.map((row) => (
+              {visibleRows.map((row) => (
                 <tr key={row.id}>
                   <td style={{ width: 48 }}>
                     <SourceAvatar
@@ -669,7 +878,19 @@ export default function SourcesPage() {
                     </button>
                   </td>
                   <td>{kindLabels[row.kind]}</td>
+                  <td>{scopeLabels[row.scope]}</td>
                   <td>{row.fetchIntervalSec}s</td>
+                  <td>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--fg-0)" }}>
+                        Q{row.qualityScore} · {qualityTierLabels[row.qualityTier]}
+                      </div>
+                      <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                        共识簇 {formatCount(row.consensusClusters7d)}/{formatCount(row.clusters7d)} ·
+                        噪声 {formatRate(row.noiseRatio7d)} · 流水 {formatRate(row.pipeline24hRate)}
+                      </div>
+                    </div>
+                  </td>
                   <td>{row.lastError ? `失败(${row.failCount})` : "正常"}</td>
                   <td>
                     <Button variant="danger" size="sm" onClick={() => void removeSource(row.id)}>
@@ -706,12 +927,22 @@ export default function SourcesPage() {
         </div>
       </Dialog>
 
-      <Dialog open={presetCenterOpen} onClose={() => setPresetCenterOpen(false)} title="预设导入中心">
-        <div style={{ display: "grid", gap: 12, maxHeight: "72vh", overflow: "auto" }}>
-          <div style={{ color: "var(--fg-2)", fontSize: 12 }}>
-            可按预设包、类别和关键词筛选，再导入你需要的信源。
+      <Dialog open={presetCenterOpen} onClose={() => setPresetCenterOpen(false)} title="导入预设">
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            maxHeight: "78vh",
+            minHeight: 0,
+            overflow: "hidden",
+          }}
+        >
+          <div style={{ color: "var(--fg-2)", fontSize: 12, lineHeight: 1.6 }}>
+            先从高信号预设里快速起步，再按需要补充手动信源。这里按来源性质分组，方便你快速筛选。
           </div>
-          <div style={{ display: "grid", gap: 8 }}>
+
+          <div style={{ display: "grid", gap: 10 }}>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {presetPacks.map((pack) => {
                 const active = presetPackFilter.includes(pack.key);
@@ -742,6 +973,33 @@ export default function SourcesPage() {
                 );
               })}
             </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {(["all", "high-signal-ai", "industry", "official", "research"] as const).map((section) => {
+                const active = presetSectionFilter === section;
+                const meta = section === "all" ? { label: "全部分组", description: "显示所有预设分组" } : PRESET_SECTION_META[section];
+                return (
+                  <button
+                    key={section}
+                    type="button"
+                    onClick={() => setPresetSectionFilter(section)}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 999,
+                      padding: "4px 10px",
+                      fontSize: 12,
+                      background: active ? "var(--bg-0)" : "var(--bg-1)",
+                      color: active ? "var(--fg-0)" : "var(--fg-2)",
+                      cursor: "pointer",
+                    }}
+                    title={meta.description}
+                  >
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <Select
                 value={presetCategoryFilter}
@@ -749,9 +1007,7 @@ export default function SourcesPage() {
                 style={{ maxWidth: 180 }}
               >
                 <option value="all">全部类别</option>
-                <option value="hotspot">热点</option>
-                <option value="research">科研</option>
-                <option value="nursing">护理</option>
+                <option value="hotspot">值得关注</option>
                 <option value="evidence">循证</option>
                 <option value="policy">政策</option>
               </Select>
@@ -763,7 +1019,7 @@ export default function SourcesPage() {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <Button
               variant="ghost"
               size="sm"
@@ -773,7 +1029,7 @@ export default function SourcesPage() {
                 setPresetChecked(next);
               }}
             >
-              全选当前列表
+              全选当前结果
             </Button>
             <Button
               variant="ghost"
@@ -784,58 +1040,95 @@ export default function SourcesPage() {
                 setPresetChecked(next);
               }}
             >
-              清空当前列表
+              清空当前结果
             </Button>
-            <span className="nm-muted" style={{ fontSize: 12, alignSelf: "center" }}>
+            <span className="nm-muted" style={{ fontSize: 12 }}>
               已选 {selectedPresetItems.length} / 当前可见 {presetList.length}
             </span>
           </div>
 
-          <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 8 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "hidden",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              padding: 12,
+            }}
+          >
             {presetCatalogLoading ? (
-              <div aria-busy="true">
-                <Skeleton style={{ height: 40, marginBottom: 8 }} />
-                <Skeleton style={{ height: 40, marginBottom: 8 }} />
+              <div aria-busy="true" style={{ display: "grid", gap: 8 }}>
+                <Skeleton style={{ height: 40 }} />
+                <Skeleton style={{ height: 40 }} />
                 <Skeleton style={{ height: 40 }} />
               </div>
             ) : presetList.length === 0 ? (
               <p className="nm-muted">当前筛选下无可选预设</p>
             ) : (
-              <div style={{ display: "grid", gap: 8, maxHeight: "36vh", overflow: "auto" }}>
-                {presetList.map((row) => (
-                  <label
-                    key={row.key}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "20px 1fr",
-                      gap: 8,
-                      alignItems: "start",
-                      borderBottom: "1px solid var(--border)",
-                      paddingBottom: 8,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!presetChecked[row.key]}
-                      onChange={(e) =>
-                        setPresetChecked((prev) => ({ ...prev, [row.key]: e.target.checked }))
-                      }
-                    />
-                    <div>
-                      <div style={{ fontSize: 13, color: "var(--fg-0)" }}>
-                        {row.item.name} <span className="nm-muted">[{row.item.kind}]</span>
-                      </div>
-                      <div className="nm-muted" style={{ fontSize: 12 }}>
-                        {row.packLabel} · {row.item.category} · {row.item.fetchIntervalSec}s
-                      </div>
-                      {row.item.description ? (
-                        <div className="nm-muted" style={{ fontSize: 12 }}>
-                          {row.item.description}
+              <div style={{ display: "grid", gap: 16, maxHeight: "100%", overflowY: "auto", paddingRight: 4 }}>
+                {presetSectionRows.map((group) => {
+                  const meta = PRESET_SECTION_META[group.section];
+                  return (
+                    <section key={group.section} style={{ display: "grid", gap: 10 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+                        <div>
+                          <div style={{ fontSize: 15, color: "var(--fg-0)" }}>{meta.label}</div>
+                          <div className="nm-muted" style={{ fontSize: 12 }}>
+                            {meta.description}
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                  </label>
-                ))}
+                        <span className="nm-muted" style={{ fontSize: 12 }}>
+                          {group.items.length} 项
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {group.items.map((row) => (
+                          <label
+                            key={row.key}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "20px 1fr",
+                              gap: 10,
+                              alignItems: "start",
+                              padding: 10,
+                              border: "1px solid var(--border)",
+                              borderRadius: 10,
+                              background: "var(--bg-1)",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!presetChecked[row.key]}
+                              onChange={(e) =>
+                                setPresetChecked((prev) => ({ ...prev, [row.key]: e.target.checked }))
+                              }
+                              style={{ marginTop: 2 }}
+                            />
+                            <div style={{ display: "grid", gap: 4 }}>
+                              <div style={{ fontSize: 13, color: "var(--fg-0)" }}>
+                                {row.item.name} <span className="nm-muted">[{row.item.kind}]</span>
+                              </div>
+                              <div className="nm-muted" style={{ fontSize: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <span>{row.packLabel}</span>
+                                <span>·</span>
+                                <span>{row.item.category}</span>
+                                <span>·</span>
+                                <span>{row.item.fetchIntervalSec}s</span>
+                              </div>
+                              {row.item.description ? (
+                                <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                                  {row.item.description}
+                                </div>
+                              ) : null}
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -894,57 +1187,6 @@ export default function SourcesPage() {
         )}
       </Dialog>
 
-      <Dialog open={importResultOpen} onClose={() => setImportResultOpen(false)} title="导入结果明细">
-        {!lastImportResult ? (
-          <p className="nm-muted">暂无导入记录</p>
-        ) : (
-          <div style={{ display: "grid", gap: 12, maxHeight: "70vh", overflow: "auto" }}>
-            <div className="nm-muted" style={{ fontSize: 13 }}>
-              请求 {lastImportResult.requestedCount ?? "-"} · 来源{" "}
-              {lastImportResult.importedFrom === "manual-selection" ? "手动选择" : "整包导入"} ·
-              新增 {lastImportResult.createdCount} · 已存在 {lastImportResult.conflictCount} · 失败{" "}
-              {lastImportResult.failedCount}
-            </div>
-            <section>
-              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>新增成功</h3>
-              {lastImportResult.created.length === 0 ? (
-                <p className="nm-muted">无</p>
-              ) : (
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                  {lastImportResult.created.map((x) => (
-                    <li key={`created-${x.id}`}>{x.name}（{x.kind}，{x.id.slice(0, 8)}…）</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-            <section>
-              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>已存在（冲突）</h3>
-              {lastImportResult.conflicts.length === 0 ? (
-                <p className="nm-muted">无</p>
-              ) : (
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                  {lastImportResult.conflicts.map((x) => (
-                    <li key={`conflict-${x.id}`}>{x.name}（{x.kind}，{x.id.slice(0, 8)}…）</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-            <section>
-              <h3 style={{ margin: "0 0 6px", fontSize: 14 }}>失败明细</h3>
-              {lastImportResult.failed.length === 0 ? (
-                <p className="nm-muted">无</p>
-              ) : (
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                  {lastImportResult.failed.map((x, idx) => (
-                    <li key={`failed-${idx}`}>{x.name}：{x.reason}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-        )}
-      </Dialog>
-
       <Drawer
         open={!!drawerSource}
         onClose={() => setDrawerSource(null)}
@@ -974,6 +1216,18 @@ export default function SourcesPage() {
                   setDrawerSource({ ...drawerSource, name: e.target.value })
                 }
               />
+            </label>
+            <label className="nm-label">
+              范围
+              <Select
+                value={drawerSource.scope}
+                onChange={(e) =>
+                  setDrawerSource({ ...drawerSource, scope: e.target.value as SourceScope })
+                }
+              >
+                <option value="public_seed">公共雷达</option>
+                <option value="personal">我的源</option>
+              </Select>
             </label>
             <label className="nm-label" style={{ display: "flex", alignItems: "center", gap: 10 }}>
               启用
@@ -1060,9 +1314,54 @@ export default function SourcesPage() {
                     body: JSON.stringify({ resetFirstFetch: true }),
                   }).then(() => toast("已重置首次抓取并排队"))
                 }
-              >
+                >
                 重新首抓
               </Button>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gap: 10,
+                padding: 12,
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                background: "var(--bg-1)",
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>质量画像</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                {[
+                  { label: "质量分", value: `Q${drawerSource.qualityScore}` },
+                  { label: "质量层级", value: qualityTierLabels[drawerSource.qualityTier] },
+                  { label: "24h 流水", value: formatRate(drawerSource.pipeline24hRate) },
+                  { label: "7d 共识簇", value: formatCount(drawerSource.consensusClusters7d) },
+                  { label: "7d 噪声率", value: formatRate(drawerSource.noiseRatio7d) },
+                  { label: "平均多源数", value: formatFixed(drawerSource.avgSourcesPerCluster7d, 2) },
+                ].map((metric) => (
+                  <div
+                    key={metric.label}
+                    style={{
+                      display: "grid",
+                      gap: 4,
+                      padding: 10,
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                    }}
+                  >
+                    <div className="nm-muted" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.1 }}>
+                      {metric.label}
+                    </div>
+                    <div style={{ fontSize: 15, color: "var(--fg-0)" }}>{metric.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                {drawerSource.qualityTier === "high"
+                  ? "这个信源已经稳定参与多源事件，适合继续保留并优先观察其首发能力。"
+                  : drawerSource.qualityTier === "medium"
+                    ? "这个信源可用，但最好结合它的共识贡献和噪声率继续观察。"
+                    : "这个信源的单源簇偏多或稳定性一般，建议优先复查去重、频率和配置。"}
+              </div>
             </div>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 8 }}>最近条目</div>
@@ -1081,3 +1380,5 @@ export default function SourcesPage() {
     </div>
   );
 }
+
+

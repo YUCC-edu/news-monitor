@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { useAppearance } from "@/app/ui/appearance-provider";
 import { Skeleton } from "@/app/ui/skeleton";
 
 type SettingsResp = {
@@ -12,9 +13,12 @@ type SettingsResp = {
     RSSHUB_BASE: string;
     WEWE_RSS_BASE: string;
     WEWE_RSS_AUTH_CODE: string;
+    AI_MODE: "core" | "llm" | "agent";
     LLM_BASE_URL: string;
     LLM_CHAT_MODEL: string;
     LLM_EMBEDDING_MODEL: string;
+    LLM_CONCURRENCY: string;
+    LLM_DAILY_REQUEST_BUDGET: string;
   };
   secure: { llmApiKeySet: boolean; llmApiKeyMasked: string };
 };
@@ -33,12 +37,31 @@ type SystemData = {
     redis: { ok: boolean };
     rsshub: { ok: boolean };
     wewe: { ok: boolean };
+    llm: {
+      mode: "core" | "llm" | "agent";
+      enabled: boolean;
+      hasKey: boolean;
+      concurrency: number;
+      dailyRequestBudget: number;
+    };
   };
   queues: Record<string, QueueCounts>;
   queueLatestFailed?: Record<
     string,
     { jobId: string; failedReason: string; attemptsMade: number; finishedOn: number | null } | null
   >;
+  queueLatestCompleted?: Record<
+    string,
+    { jobId: string; returnvalue: unknown; finishedOn: number | null } | null
+  >;
+  dataHealth: {
+    sources: number;
+    enabledSources: number;
+    items: number;
+    enrichments: number;
+    clusters: number;
+    orphanClusters: number;
+  } | null;
   backups: Array<{ name: string; sizeKB: number; mtime: string }>;
   node: { version: string; platform: string; uptimeSec: number };
 };
@@ -54,9 +77,12 @@ const EMPTY_FORM: FormValues = {
   RSSHUB_BASE: "",
   WEWE_RSS_BASE: "",
   WEWE_RSS_AUTH_CODE: "",
+  AI_MODE: "core",
   LLM_BASE_URL: "",
   LLM_CHAT_MODEL: "",
   LLM_EMBEDDING_MODEL: "",
+  LLM_CONCURRENCY: "2",
+  LLM_DAILY_REQUEST_BUDGET: "500",
   LLM_API_KEY: "",
   clearLlmApiKey: false,
 };
@@ -77,6 +103,11 @@ function inferAdvice(data: SystemData | null, previous: SystemData | null): stri
   if (!data.env.redis.ok) advice.push("Redis 不可用：先检查 REDIS_URL 与容器状态。");
   if (!data.env.rsshub.ok) advice.push("RSSHub 不可用：检查 RSSHUB_BASE、网络与服务日志。");
   if (!data.env.wewe.ok) advice.push("WeWe 不可用：检查 WEWE_RSS_BASE 与 AUTH_CODE。");
+  if ((data.dataHealth?.orphanClusters ?? 0) > 0) {
+    advice.push(
+      `数据清理需关注：当前有 ${data.dataHealth?.orphanClusters ?? 0} 个孤立聚类。可执行 retention 任务或 cleanupOrphanClusters 清理。`,
+    );
+  }
   const queueIssues = Object.entries(data.queues).filter(([name, c]) => {
     const waiting = c?.waiting ?? 0;
     const failed = c?.failed ?? 0;
@@ -105,6 +136,7 @@ function inferAdvice(data: SystemData | null, previous: SystemData | null): stri
 }
 
 export default function SettingsPage() {
+  const { locale, theme, setLocale, setTheme, copy } = useAppearance();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +146,7 @@ export default function SettingsPage() {
   const [form, setForm] = useState<FormValues>(EMPTY_FORM);
   const [system, setSystem] = useState<SystemData | null>(null);
   const [prevSystem, setPrevSystem] = useState<SystemData | null>(null);
+  const systemRef = useRef<SystemData | null>(null);
 
   const advice = useMemo(() => inferAdvice(system, prevSystem), [system, prevSystem]);
   const failureHighlights = useMemo(() => {
@@ -124,7 +157,7 @@ export default function SettingsPage() {
       .slice(0, 4);
   }, [system]);
 
-  async function loadSettings() {
+  const loadSettings = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -143,26 +176,30 @@ export default function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function loadSystem() {
+  const loadSystem = useCallback(async () => {
     try {
       const data = (await fetch("/api/system").then((r) => r.json())) as SystemData;
-      setPrevSystem(system);
+      setPrevSystem(systemRef.current);
+      systemRef.current = data;
       setSystem(data);
     } catch {
       // ignore
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadSettings();
     void loadSystem();
+  }, [loadSettings, loadSystem]);
+
+  useEffect(() => {
     const t = setInterval(() => {
       if (document.visibilityState === "visible") void loadSystem();
     }, 30000);
     return () => clearInterval(t);
-  }, []);
+  }, [loadSystem]);
 
   async function saveAll() {
     setSaving(true);
@@ -175,9 +212,12 @@ export default function SettingsPage() {
         RSSHUB_BASE: form.RSSHUB_BASE,
         WEWE_RSS_BASE: form.WEWE_RSS_BASE,
         WEWE_RSS_AUTH_CODE: form.WEWE_RSS_AUTH_CODE,
+        AI_MODE: form.AI_MODE,
         LLM_BASE_URL: form.LLM_BASE_URL,
         LLM_CHAT_MODEL: form.LLM_CHAT_MODEL,
         LLM_EMBEDDING_MODEL: form.LLM_EMBEDDING_MODEL,
+        LLM_CONCURRENCY: form.LLM_CONCURRENCY,
+        LLM_DAILY_REQUEST_BUDGET: form.LLM_DAILY_REQUEST_BUDGET,
         ...(form.LLM_API_KEY.trim() ? { LLM_API_KEY: form.LLM_API_KEY.trim() } : {}),
       };
       const resp = await fetch("/api/settings", {
@@ -261,14 +301,78 @@ export default function SettingsPage() {
           {saved && <div style={okStyle}>{saved}</div>}
 
           <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>LLM</h2>
+            <h2 style={sectionTitle}>{copy.appearanceLabel}</h2>
+            <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
+              {locale === "zh-CN"
+                ? "这里控制界面语言和主题。中文模式优先显示 titleZh/contentZh，英文模式优先显示原文。"
+                : "Control interface language and theme here. Chinese mode prefers titleZh/contentZh, English mode prefers the original text."}
+            </div>
             <div style={gridStyle}>
+              <label style={field}>
+                <div style={fieldLabel}>{copy.languageLabel}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button type="button" style={locale === "zh-CN" ? solidBtn : ghostBtn} onClick={() => setLocale("zh-CN")}>
+                    {copy.languageChinese}
+                  </button>
+                  <button type="button" style={locale === "en-US" ? solidBtn : ghostBtn} onClick={() => setLocale("en-US")}>
+                    {copy.languageEnglish}
+                  </button>
+                </div>
+              </label>
+              <label style={field}>
+                <div style={fieldLabel}>{copy.themeLabel}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button type="button" style={theme === "dark" ? solidBtn : ghostBtn} onClick={() => setTheme("dark")}>
+                    {copy.themeDark}
+                  </button>
+                  <button type="button" style={theme === "light" ? solidBtn : ghostBtn} onClick={() => setTheme("light")}>
+                    {copy.themeLight}
+                  </button>
+                  <button type="button" style={theme === "paper" ? solidBtn : ghostBtn} onClick={() => setTheme("paper")}>
+                    {copy.themePaper}
+                  </button>
+                </div>
+              </label>
+            </div>
+          </section>
+
+          <section style={{ ...cardStyle, marginBottom: 16 }}>
+            <h2 style={sectionTitle}>LLM</h2>
+            {system ? (
+              <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
+                AI_MODE={system.env.llm.mode} · LLM {system.env.llm.enabled ? "enabled" : "optional/off"} · budget{" "}
+                {system.env.llm.dailyRequestBudget}/day
+              </div>
+            ) : null}
+            <div style={gridStyle}>
+              <label style={field}>
+                <div style={fieldLabel}>AI_MODE</div>
+                <select
+                  value={form.AI_MODE}
+                  onChange={(e) => update("AI_MODE", e.target.value as FormValues["AI_MODE"])}
+                  style={fieldInput}
+                >
+                  <option value="core">core - no LLM required</option>
+                  <option value="llm">llm - use configured LLM</option>
+                  <option value="agent">agent - external Agent handles AI</option>
+                </select>
+              </label>
               <Field label="LLM_BASE_URL" value={form.LLM_BASE_URL} onChange={(v) => update("LLM_BASE_URL", v)} />
               <Field label="LLM_CHAT_MODEL" value={form.LLM_CHAT_MODEL} onChange={(v) => update("LLM_CHAT_MODEL", v)} />
               <Field
                 label="LLM_EMBEDDING_MODEL"
                 value={form.LLM_EMBEDDING_MODEL}
                 onChange={(v) => update("LLM_EMBEDDING_MODEL", v)}
+              />
+              <Field
+                label="LLM_CONCURRENCY"
+                value={form.LLM_CONCURRENCY}
+                onChange={(v) => update("LLM_CONCURRENCY", v)}
+              />
+              <Field
+                label="LLM_DAILY_REQUEST_BUDGET"
+                value={form.LLM_DAILY_REQUEST_BUDGET}
+                onChange={(v) => update("LLM_DAILY_REQUEST_BUDGET", v)}
               />
               <Field
                 label={`LLM_API_KEY (${llmApiKeySet ? "已配置" : "未配置"})`}
@@ -382,6 +486,23 @@ export default function SettingsPage() {
                 <div style={{ marginTop: 10, color: "#cdd2dc", fontSize: 13 }}>
                   Node {system.node.version} · {system.node.platform} · 已运行 {Math.floor(system.node.uptimeSec / 60)} 分钟
                 </div>
+                {system.dataHealth ? (
+                  <div style={{ marginTop: 6, color: "#cdd2dc", fontSize: 13 }}>
+                    数据：{system.dataHealth.items} items · {system.dataHealth.enrichments} enrichments ·{" "}
+                    {system.dataHealth.clusters} clusters · 孤立聚类{" "}
+                    <span style={{ color: system.dataHealth.orphanClusters > 0 ? "#ffbe7a" : "#b8f2ca" }}>
+                      {system.dataHealth.orphanClusters}
+                    </span>
+                  </div>
+                ) : null}
+                {system.queueLatestCompleted?.retention ? (
+                  <div style={{ marginTop: 6, color: "#73809b", fontSize: 12 }}>
+                    最近 retention：job={system.queueLatestCompleted.retention.jobId || "n/a"} ·{" "}
+                    {system.queueLatestCompleted.retention.finishedOn
+                      ? new Date(system.queueLatestCompleted.retention.finishedOn).toLocaleString("zh-CN")
+                      : "时间未知"}
+                  </div>
+                ) : null}
                 {system.backups[0] && (
                   <div style={{ marginTop: 6, color: "#73809b", fontSize: 12 }}>
                     最近备份：{system.backups[0].name} · {system.backups[0].sizeKB} KB ·{" "}
@@ -435,45 +556,51 @@ function Field(props: {
 }
 
 const cardStyle: CSSProperties = {
-  background: "#0f1522",
-  border: "1px solid #252c3d",
+  background: "var(--bg-1)",
+  border: "1px solid var(--border)",
   borderRadius: 10,
   padding: 14,
 };
-const sectionTitle: CSSProperties = { margin: "0 0 12px", fontSize: 14, color: "#cdd2dc" };
+const sectionTitle: CSSProperties = { margin: "0 0 12px", fontSize: 14, color: "var(--fg-0)" };
 const gridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))",
   gap: 10,
 };
 const field: CSSProperties = { display: "grid", gap: 4 };
-const fieldLabel: CSSProperties = { color: "#8fa1c3", fontSize: 12 };
+const fieldLabel: CSSProperties = { color: "var(--fg-2)", fontSize: 12 };
 const fieldInput: CSSProperties = {
-  border: "1px solid #2a2f3d",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: "8px 10px",
-  background: "#0c1019",
-  color: "#d8deea",
+  background: "var(--bg-0)",
+  color: "var(--fg-0)",
   fontSize: 13,
 };
-const checkboxLine: CSSProperties = { color: "#cdd2dc", fontSize: 13, display: "flex", gap: 6, alignItems: "center" };
+const checkboxLine: CSSProperties = { color: "var(--fg-1)", fontSize: 13, display: "flex", gap: 6, alignItems: "center" };
 const saveBtn: CSSProperties = {
-  border: "1px solid #3b82f6",
+  border: "1px solid var(--fg-0)",
   borderRadius: 6,
   padding: "8px 14px",
-  background: "#3b82f6",
-  color: "#fff",
+  background: "var(--fg-0)",
+  color: "var(--bg-0)",
   cursor: "pointer",
   fontSize: 12,
 };
 const ghostBtn: CSSProperties = {
-  border: "1px solid #2a2f3d",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: "8px 14px",
   background: "transparent",
-  color: "#cdd2dc",
+  color: "var(--fg-1)",
   cursor: "pointer",
   fontSize: 12,
+};
+const solidBtn: CSSProperties = {
+  ...ghostBtn,
+  background: "var(--fg-0)",
+  color: "var(--bg-0)",
+  border: "1px solid var(--fg-0)",
 };
 const linkBtn: CSSProperties = {
   ...ghostBtn,
@@ -481,38 +608,38 @@ const linkBtn: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
 };
-const statusRow: CSSProperties = { display: "flex", gap: 16, flexWrap: "wrap", color: "#cdd2dc", fontSize: 13 };
+const statusRow: CSSProperties = { display: "flex", gap: 16, flexWrap: "wrap", color: "var(--fg-1)", fontSize: 13 };
 const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse" };
 const thStyle: CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
-  borderBottom: "1px solid #20283a",
-  color: "#73809b",
+  borderBottom: "1px solid var(--border)",
+  color: "var(--fg-2)",
   fontSize: 12,
   fontWeight: 500,
 };
 const tdStyle: CSSProperties = {
   padding: "8px 10px",
-  borderBottom: "1px solid #1d2333",
-  color: "#cdd2dc",
+  borderBottom: "1px solid var(--border)",
+  color: "var(--fg-1)",
   fontSize: 13,
 };
-const muted: CSSProperties = { color: "#5b6478" };
+const muted: CSSProperties = { color: "var(--fg-2)" };
 const errorStyle: CSSProperties = {
   marginBottom: 12,
-  border: "1px solid #6b2b2b",
+  border: "1px solid var(--border-strong)",
   borderRadius: 8,
   padding: "8px 10px",
-  background: "rgba(128, 43, 43, 0.25)",
-  color: "#ffc9c9",
+  background: "var(--danger-bg)",
+  color: "var(--danger)",
   fontSize: 13,
 };
 const okStyle: CSSProperties = {
   marginBottom: 12,
-  border: "1px solid #285f3c",
+  border: "1px solid var(--border-strong)",
   borderRadius: 8,
   padding: "8px 10px",
-  background: "rgba(35, 88, 57, 0.25)",
-  color: "#b8f2ca",
+  background: "rgba(255,255,255,0.05)",
+  color: "var(--fg-0)",
   fontSize: 13,
 };

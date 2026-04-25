@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listSources, upsertSource } from "@news/db";
+import { executeCapability } from "@news/engine";
 import { createLogger } from "@news/shared";
 import Redis from "ioredis";
 import { enqueueFetchSource } from "@/lib/fetch-source-queue";
@@ -17,10 +17,18 @@ function getPublishRedis() {
   return publishRedis;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const t0 = Date.now();
   try {
-    const rows = await listSources();
+    const scope = new URL(request.url).searchParams.get("scope");
+    const result = await executeCapability("sources.list", {
+      scope: scope === "public_seed" || scope === "personal" ? scope : undefined,
+    });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 500 });
+    }
+    const data = result.data as { sources: unknown[] };
+    const rows = data.sources;
     log.debug("sources listed", { latencyMs: Date.now() - t0, count: rows.length });
     return NextResponse.json(rows);
   } catch (e) {
@@ -36,20 +44,29 @@ export async function POST(request: Request) {
     kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
     name: string;
     config: unknown;
+    scope?: "public_seed" | "personal";
     enabled?: boolean;
     fetchIntervalSec?: number;
     initialFetchDays?: number | null;
     maxItemAgeDays?: number | null;
   };
-  const created = await upsertSource(body);
-  if (!created) {
-    log.warn("source create rejected", { reason: "failed to create source" });
-    return NextResponse.json({ error: "failed to create source" }, { status: 400 });
+  const result = await executeCapability("sources.add", { ...body, scope: body.scope ?? "personal" });
+  if (!result.ok) {
+    if (result.error.code === "conflict") {
+      return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 409 });
+    }
+    log.warn("source create rejected", { kind: body.kind, message: result.error.message, code: result.error.code });
+    return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 400 });
   }
-  if ("conflict" in created) {
-    log.warn("source create conflict", { kind: body.kind, name: body.name, existingId: created.existing.id });
-    return NextResponse.json({ existing: created.existing }, { status: 409 });
+  const payload = result.data as { conflict?: boolean; existing?: unknown; source?: Record<string, unknown> };
+  if (payload.conflict) {
+    return NextResponse.json({ existing: payload.existing }, { status: 409 });
   }
+  const created = payload.source as {
+    id: string;
+    kind: string;
+    fetchIntervalSec: number;
+  };
   try {
     await getPublishRedis().publish(
       "sources.changed",

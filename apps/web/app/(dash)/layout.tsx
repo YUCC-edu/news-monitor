@@ -2,40 +2,116 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AppearanceSwitcher } from "@/app/ui/appearance-switcher";
+import { AssistantWidget } from "@/app/ui/assistant-widget";
+import { useAppearance } from "@/app/ui/appearance-provider";
 import { cn } from "@/app/ui/cn";
 import { CommandPalette } from "@/app/ui/command-palette";
 import { DASH_NAV } from "@/lib/global-search";
 
-const NAV = DASH_NAV;
+const CRUMB = {
+  "zh-CN": {
+    "/": "总编台",
+    "/categories": "分类",
+    "/favorites": "收藏",
+    "/link-saves": "博主信源",
+    "/sources": "信源库",
+    "/recommended-sources": "推荐信源",
+    "/creators": "博主订阅",
+    "/health": "信源健康",
+    "/keywords": "关键词",
+    "/ops": "运营",
+    "/settings": "设置",
+  },
+  "en-US": {
+    "/": "News Desk",
+    "/categories": "Categories",
+    "/favorites": "Favorites",
+    "/link-saves": "Blog Sources",
+    "/sources": "Source Library",
+    "/recommended-sources": "Recommended Sources",
+    "/creators": "Creator Feeds",
+    "/health": "Source Health",
+    "/keywords": "Keywords",
+    "/ops": "Ops",
+    "/settings": "Settings",
+  },
+} as const;
 
-const CRUMB: Record<string, string> = {
-  "/": "时间轴",
-  "/categories": "分类",
-  "/favorites": "收藏",
-  "/link-saves": "链接收藏",
-  "/sources": "信源管理",
-  "/creators": "博主订阅",
-  "/health": "信源健康",
-  "/keywords": "关键词",
-  "/stats": "统计",
-  "/ops": "运维",
-  "/settings": "设置",
-  "/system": "系统",
+const NAV_LABEL_EN: Record<string, string> = {
+  总编流: "Desk Flow",
+  信源运营: "Source Ops",
+  运营: "Ops",
+  总编台: "News Desk",
+  分类: "Categories",
+  收藏: "Favorites",
+  博主信源: "Blog Sources",
+  信源库: "Source Library",
+  推荐信源: "Recommended Sources",
+  博主订阅: "Creator Feeds",
+  信源健康: "Source Health",
+  关键词: "Keywords",
+  设置: "Settings",
 };
+
+function BrandMark() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        border: "1px solid var(--border-strong)",
+        display: "inline-grid",
+        placeItems: "center",
+        position: "relative",
+        background: "rgba(255,255,255,0.03)",
+        overflow: "hidden",
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          left: 8,
+          top: 4,
+          fontSize: 18,
+          fontWeight: 800,
+          fontFamily: "var(--font-mono)",
+          color: "var(--fg-0)",
+          transform: "skewX(-16deg) rotate(-10deg)",
+        }}
+      >
+        N
+      </span>
+      <span
+        style={{
+          position: "absolute",
+          right: 8,
+          bottom: 3,
+          fontSize: 18,
+          fontWeight: 800,
+          fontFamily: "var(--font-mono)",
+          color: "var(--fg-0)",
+          transform: "rotate(180deg) skewX(-14deg)",
+        }}
+      >
+        V
+      </span>
+    </span>
+  );
+}
 
 export default function DashLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
-  const [mobileNav, setMobileNav] = useState(false);
+  const { locale } = useAppearance();
   const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
-    setMobileNav(false);
-  }, [pathname]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
         setSearchOpen(true);
       }
     };
@@ -43,7 +119,26 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const groups = Array.from(new Set(NAV.map((n) => n.group).filter(Boolean))) as string[];
+  const groups = Array.from(new Set(DASH_NAV.map((entry) => entry.group).filter(Boolean))) as string[];
+  const crumbLabel = CRUMB[locale][pathname as keyof (typeof CRUMB)["zh-CN"]] ?? "news-monitor";
+
+  const sidebarLead = useMemo(
+    () =>
+      locale === "zh-CN"
+        ? {
+            brand: "新闻监测",
+            workspace: "黑白情报总编台",
+            search: "Ctrl/Cmd+K 搜索",
+            menu: "打开导航",
+          }
+        : {
+            brand: "news-monitor",
+            workspace: "Monochrome newsroom console",
+            search: "Ctrl/Cmd+K Search",
+            menu: "Open navigation",
+          },
+    [locale],
+  );
 
   return (
     <div className="nm-dash-root">
@@ -52,79 +147,69 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
         style={{
           background: "var(--bg-1)",
           borderRight: "1px solid var(--border)",
-          padding: "20px 0",
+          padding: "18px 0",
           display: "flex",
           flexDirection: "column",
-          gap: 8,
+          gap: 10,
           position: "sticky",
           top: 0,
           alignSelf: "start",
           height: "100vh",
         }}
       >
-        <div
-          style={{
-            padding: "0 20px 12px",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <span
+        <div style={{ padding: "0 20px 14px", display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <BrandMark />
+            <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
+              <div style={{ fontWeight: 800, color: "var(--fg-0)", fontSize: 16, letterSpacing: 0.2 }}>
+                {sidebarLead.brand}
+              </div>
+            </div>
+          </div>
+
+          <div
             style={{
-              width: 36,
-              height: 36,
+              border: "1px solid var(--border)",
               borderRadius: 10,
-              border: "1px solid var(--border-strong)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: -0.5,
-              color: "var(--fg-0)",
-              fontFamily: "var(--font-mono)",
+              padding: "10px 12px",
+              background: "rgba(255,255,255,0.02)",
             }}
           >
-            nm
-          </span>
-          <div>
-            <div style={{ fontWeight: 600, color: "var(--fg-0)", fontSize: 15 }}>
-              news-monitor
-            </div>
-            <div className="nm-muted">黑白 · 极简</div>
+            <div style={{ color: "var(--fg-0)", fontWeight: 700, fontSize: 13 }}>{sidebarLead.workspace}</div>
           </div>
         </div>
-        <nav style={{ display: "flex", flexDirection: "column", gap: 16, flex: 1 }}>
-          {groups.map((g) => (
-            <div key={g}>
+
+        <nav style={{ display: "flex", flexDirection: "column", gap: 18, flex: 1 }}>
+          {groups.map((group) => (
+            <div key={group}>
               <div
                 style={{
-                  padding: "0 20px 6px",
+                  padding: "0 20px 8px",
                   fontSize: 10,
-                  letterSpacing: 2,
+                  letterSpacing: 1.8,
                   color: "var(--fg-3)",
                   textTransform: "uppercase",
                 }}
               >
-                {g}
+                {locale === "zh-CN" ? group : NAV_LABEL_EN[group] ?? group}
               </div>
-              {NAV.filter((n) => n.group === g).map((n) => {
-                const active = pathname === n.href;
+              {DASH_NAV.filter((entry) => entry.group === group).map((entry) => {
+                const active = pathname === entry.href;
                 return (
                   <Link
-                    key={n.href}
-                    href={n.href}
+                    key={entry.href}
+                    href={entry.href}
                     className={cn("nm-nav-link", active && "nm-nav-link--active")}
                     style={{
                       display: "block",
-                      padding: "8px 20px",
+                      padding: "9px 20px",
                       color: active ? "var(--fg-0)" : "var(--fg-2)",
                       borderLeft: active ? "2px solid var(--fg-0)" : "2px solid transparent",
-                      transition: "color 120ms ease, border-color 120ms ease",
+                      background: active ? "rgba(255,255,255,0.03)" : "transparent",
+                      transition: "color 120ms ease, border-color 120ms ease, background 120ms ease",
                     }}
                   >
-                    {n.label}
+                    {locale === "zh-CN" ? entry.label : NAV_LABEL_EN[entry.label] ?? entry.label}
                   </Link>
                 );
               })}
@@ -136,7 +221,7 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
       <div style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
         <header
           style={{
-            height: "var(--header-h)",
+            minHeight: "var(--header-h)",
             borderBottom: "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
@@ -145,97 +230,39 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
             position: "sticky",
             top: 0,
             zIndex: 5,
-            background: "rgba(0,0,0,0.75)",
-            backdropFilter: "blur(10px)",
+            background: "color-mix(in srgb, var(--bg-1) 88%, transparent)",
+            backdropFilter: "blur(12px)",
           }}
         >
-          <button
-            type="button"
-            className="nm-mobile-toggle"
-            onClick={() => setMobileNav((v) => !v)}
-            aria-label="菜单"
-            style={{
-              display: "none",
-              background: "none",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              color: "var(--fg-0)",
-              padding: "6px 10px",
-              cursor: "pointer",
-            }}
-          >
-            ☰
-          </button>
-          <span style={{ fontWeight: 600, color: "var(--fg-0)" }}>
-            {CRUMB[pathname] ?? "news-monitor"}
-          </span>
-          <button
-            type="button"
-            aria-label="打开全局搜索"
-            onClick={() => setSearchOpen(true)}
-            style={{
-              marginLeft: "auto",
-              border: "1px solid var(--border)",
-              background: "transparent",
-              color: "var(--fg-2)",
-              borderRadius: 8,
-              padding: "4px 10px",
-              cursor: "pointer",
-            }}
-            title="打开全局搜索"
-          >
-            ⌘K 搜索
-          </button>
-        </header>
-
-        {mobileNav ? (
-          <div
-            className="nm-mobile-drawer"
-            style={{
-              position: "fixed",
-              inset: 0,
-              zIndex: 50,
-              background: "rgba(0,0,0,0.6)",
-              backdropFilter: "blur(6px)",
-            }}
-            onClick={() => setMobileNav(false)}
-          >
-            <nav
-              onClick={(e) => e.stopPropagation()}
+          <div style={{ display: "grid", gap: 2 }}>
+            <span style={{ fontWeight: 600, color: "var(--fg-0)" }}>{crumbLabel}</span>
+          </div>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+            <AppearanceSwitcher />
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
               style={{
-                width: "min(280px, 85vw)",
-                height: "100%",
+                border: "1px solid var(--border)",
                 background: "var(--bg-1)",
-                borderRight: "1px solid var(--border)",
-                padding: 16,
+                color: "var(--fg-1)",
+                borderRadius: 8,
+                padding: "8px 12px",
+                cursor: "pointer",
               }}
             >
-              {NAV.map((n) => (
-                <Link
-                  key={n.href}
-                  href={n.href}
-                  style={{
-                    display: "block",
-                    padding: "10px 8px",
-                    color: pathname === n.href ? "var(--fg-0)" : "var(--fg-2)",
-                  }}
-                >
-                  {n.label}
-                </Link>
-              ))}
-            </nav>
+              {sidebarLead.search}
+            </button>
           </div>
-        ) : null}
+        </header>
 
-        <main
-          className="nm-page"
-          style={{ padding: "24px 28px 48px", flex: 1 }}
-        >
-          {children}
+        <main style={{ padding: 20, minWidth: 0 }}>
+          <div style={{ maxWidth: 1560, margin: "0 auto" }}>{children}</div>
         </main>
-        <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
       </div>
 
+      <AssistantWidget pagePath={pathname} />
+      <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }

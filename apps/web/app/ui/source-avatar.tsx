@@ -22,10 +22,12 @@ export function resolveAvatarUrl(s: SourceLike): string | null {
     }
   }
   if (s.kind === "rss") {
+    const homepageUrl = typeof cfg.homepageUrl === "string" ? cfg.homepageUrl : "";
     const feedUrl = typeof cfg.feedUrl === "string" ? cfg.feedUrl : "";
-    if (!feedUrl) return null;
+    const iconUrl = homepageUrl || feedUrl;
+    if (!iconUrl) return null;
     try {
-      const u = new URL(feedUrl);
+      const u = new URL(iconUrl);
       return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(u.hostname)}&sz=64`;
     } catch {
       return null;

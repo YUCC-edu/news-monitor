@@ -1,10 +1,12 @@
-import { and, asc, desc, eq, ilike, inArray, lt, max, ne, or, sql } from "drizzle-orm";
+﻿import { and, asc, desc, eq, ilike, inArray, lt, max, ne, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { computeDedupKey, type SourceKind } from "./dedup";
 import { getDb, getSql } from "./client";
 import type { Source } from "./schema";
+import { extractAttentionKeywords } from "@news/shared";
 import {
   clusters,
+  assistantActions,
   favorites,
   itemEnrichments,
   items,
@@ -20,6 +22,7 @@ export type SourceInput = {
   kind: SourceKind;
   name: string;
   config: unknown;
+  scope?: SourceScope;
   enabled?: boolean;
   fetchIntervalSec?: number;
   initialFetchDays?: number | null;
@@ -46,6 +49,25 @@ export type MarkRunInput = {
 export async function listSources() {
   const db = getDb();
   return db.select().from(sources).orderBy(asc(sources.createdAt));
+}
+
+export type SourceListFilter = {
+  kind?: SourceKind;
+  scope?: SourceScope;
+  enabledOnly?: boolean;
+};
+
+export async function listSourcesWithFilter(filter?: SourceListFilter) {
+  const db = getDb();
+  const clauses: SQL[] = [];
+  if (filter?.kind) clauses.push(eq(sources.kind, filter.kind));
+  if (filter?.scope) clauses.push(eq(sources.scope, filter.scope));
+  if (filter?.enabledOnly) clauses.push(eq(sources.enabled, true));
+  return db
+    .select()
+    .from(sources)
+    .where(clauses.length ? and(...clauses) : undefined)
+    .orderBy(asc(sources.createdAt));
 }
 
 export async function listSourceHealth() {
@@ -87,6 +109,129 @@ export async function listSourceHealth() {
   });
 }
 
+export async function listSourceInventory() {
+  const db = getDb();
+  const base = await db
+    .select({
+      id: sources.id,
+      kind: sources.kind,
+      scope: sources.scope,
+      name: sources.name,
+      config: sources.config,
+      enabled: sources.enabled,
+      fetchIntervalSec: sources.fetchIntervalSec,
+      initialFetchDays: sources.initialFetchDays,
+      maxItemAgeDays: sources.maxItemAgeDays,
+      lastOkAt: sources.lastOkAt,
+      lastError: sources.lastError,
+      failCount: sources.failCount,
+      pipeline24hRate: sql<number | null>`NULL::float`,
+    })
+    .from(sources)
+    .orderBy(asc(sources.createdAt));
+
+  const sqlClient = getSql();
+  const itemStats = await sqlClient<
+    {
+      source_id: string;
+      total_items_all_time: number;
+      items_24h: number;
+      items_7d: number;
+      enriched_24h: number;
+    }[]
+  >`
+    SELECT
+      i.source_id::text AS source_id,
+      COUNT(*)::int AS total_items_all_time,
+      COUNT(*) FILTER (WHERE i.fetched_at >= now() - interval '24 hours')::int AS items_24h,
+      COUNT(*) FILTER (WHERE i.fetched_at >= now() - interval '7 days')::int AS items_7d,
+      COUNT(*) FILTER (WHERE i.fetched_at >= now() - interval '24 hours' AND ie.item_id IS NOT NULL)::int AS enriched_24h
+    FROM items i
+    LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+    GROUP BY i.source_id
+  `;
+  const clusterStats = await sqlClient<
+    {
+      source_id: string;
+      clusters_7d: number;
+      consensus_clusters_7d: number;
+      single_source_clusters_7d: number;
+      avg_sources_per_cluster_7d: number | null;
+      avg_items_per_cluster_7d: number | null;
+      max_sources_in_cluster_7d: number | null;
+    }[]
+  >`
+    WITH cluster_members AS (
+      SELECT
+        i.source_id::text AS source_id,
+        ie.cluster_id,
+        COUNT(*)::int AS item_count,
+        COUNT(DISTINCT i.source_id)::int AS distinct_sources
+      FROM item_enrichments ie
+      INNER JOIN items i ON i.id = ie.item_id
+      WHERE ie.cluster_id IS NOT NULL
+        AND i.fetched_at >= now() - interval '7 days'
+      GROUP BY i.source_id, ie.cluster_id
+    )
+    SELECT
+      source_id,
+      COUNT(*)::int AS clusters_7d,
+      COUNT(*) FILTER (WHERE distinct_sources >= 2)::int AS consensus_clusters_7d,
+      COUNT(*) FILTER (WHERE distinct_sources = 1)::int AS single_source_clusters_7d,
+      AVG(distinct_sources)::float AS avg_sources_per_cluster_7d,
+      AVG(item_count)::float AS avg_items_per_cluster_7d,
+      MAX(distinct_sources)::int AS max_sources_in_cluster_7d
+    FROM cluster_members
+    GROUP BY source_id
+  `;
+  const itemMap = new Map(itemStats.map((row) => [row.source_id, row]));
+  const clusterMap = new Map(clusterStats.map((row) => [row.source_id, row]));
+
+  return base.map((row) => {
+    const itemRow = itemMap.get(row.id);
+    const clusterRow = clusterMap.get(row.id);
+    const clusters7d = clusterRow?.clusters_7d ?? 0;
+    const consensusClusters7d = clusterRow?.consensus_clusters_7d ?? 0;
+    const singleSourceClusters7d = clusterRow?.single_source_clusters_7d ?? 0;
+    const consensusClusterRate7d = clusters7d > 0 ? consensusClusters7d / clusters7d : null;
+    const noiseRatio7d = clusters7d > 0 ? singleSourceClusters7d / clusters7d : null;
+    const pipeline24hRate =
+      itemRow && itemRow.total_items_all_time > 0 ? itemRow.enriched_24h / itemRow.total_items_all_time : row.pipeline24hRate;
+    const qualityScore = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          (pipeline24hRate ?? 0) * 35 +
+            (consensusClusterRate7d ?? 0) * 35 +
+            Math.min((clusterRow?.avg_sources_per_cluster_7d ?? 0) / 3, 1) * 20 +
+            (1 - (noiseRatio7d ?? 0)) * 10,
+        ),
+      ),
+    );
+    const qualityTier: "high" | "medium" | "low" =
+      qualityScore >= 70 ? "high" : qualityScore >= 45 ? "medium" : "low";
+    return {
+      ...row,
+      pipeline24hRate,
+      totalItemsAllTime: itemRow?.total_items_all_time ?? 0,
+      items24h: itemRow?.items_24h ?? 0,
+      items7d: itemRow?.items_7d ?? 0,
+      enriched24h: itemRow?.enriched_24h ?? 0,
+      clusters7d,
+      consensusClusters7d,
+      singleSourceClusters7d,
+      avgSourcesPerCluster7d: clusterRow?.avg_sources_per_cluster_7d ?? 0,
+      avgItemsPerCluster7d: clusterRow?.avg_items_per_cluster_7d ?? 0,
+      maxSourcesInCluster7d: clusterRow?.max_sources_in_cluster_7d ?? 0,
+      consensusClusterRate7d,
+      noiseRatio7d,
+      qualityScore,
+      qualityTier,
+    };
+  });
+}
+
 export async function getSourceById(id: string) {
   const db = getDb();
   return db.query.sources.findFirst({
@@ -108,6 +253,7 @@ export type UpsertSourceResult =
 export async function upsertSource(input: SourceInput): Promise<UpsertSourceResult | null> {
   const db = getDb();
   const dedupKey = computeDedupKey(input.kind, input.config);
+  const scope = normalizeSourceScope(input.scope);
   if (input.id) {
     const existing = await getSourceById(input.id);
     if (!existing) return null;
@@ -136,6 +282,7 @@ export async function upsertSource(input: SourceInput): Promise<UpsertSourceResu
         kind: input.kind,
         name: input.name,
         config: input.config,
+        scope,
         enabled: input.enabled ?? true,
         fetchIntervalSec: input.fetchIntervalSec ?? 300,
         dedupKey,
@@ -167,6 +314,7 @@ export async function upsertSource(input: SourceInput): Promise<UpsertSourceResu
       kind: input.kind,
       name: input.name,
       config: input.config,
+      scope,
       enabled: input.enabled ?? true,
       fetchIntervalSec: input.fetchIntervalSec ?? 300,
       dedupKey,
@@ -375,6 +523,24 @@ export async function getClusterDistinctSourceCount(clusterId: string) {
     FROM item_enrichments ie
     INNER JOIN items i ON i.id = ie.item_id
     WHERE ie.cluster_id = ${clusterId}::uuid
+  `;
+  return row?.count ?? 0;
+}
+
+export async function getClusterDistinctSourceCountByAudience(
+  clusterId: string,
+  audience?: "public" | "personal",
+) {
+  const sqlClient = getSql();
+  const scope = audienceToSourceScope(audience);
+  const scopeFrag = scope ? sqlClient`AND s.scope = ${scope}` : sqlClient``;
+  const [row] = await sqlClient<{ count: number }[]>`
+    SELECT COUNT(DISTINCT i.source_id)::int AS count
+    FROM item_enrichments ie
+    INNER JOIN items i ON i.id = ie.item_id
+    INNER JOIN sources s ON s.id = i.source_id
+    WHERE ie.cluster_id = ${clusterId}::uuid
+      ${scopeFrag}
   `;
   return row?.count ?? 0;
 }
@@ -651,12 +817,13 @@ export type ClusterSiblingRow = {
   sourceConfig: unknown;
 };
 
-/** Recent items in a cluster (for “其它来源” UI). */
+/** Recent items in a cluster (for 鈥滃叾瀹冩潵婧愨€?UI). */
 export async function listClusterSiblingItems(params: {
   clusterId: string;
   excludeItemId?: string;
   excludeSourceId?: string;
   limit?: number;
+  audience?: "public" | "personal";
 }): Promise<ClusterSiblingRow[]> {
   const pg = getSql();
   const limit = Math.min(Math.max(params.limit ?? 30, 1), 100);
@@ -664,6 +831,8 @@ export async function listClusterSiblingItems(params: {
   const excludeSourceFrag = params.excludeSourceId
     ? pg`AND i.source_id <> ${params.excludeSourceId}::uuid`
     : pg``;
+  const scope = audienceToSourceScope(params.audience);
+  const scopeFrag = scope ? pg`AND s.scope = ${scope}` : pg``;
   const rows = await pg<
     {
       item_id: string;
@@ -696,6 +865,7 @@ export async function listClusterSiblingItems(params: {
       WHERE ie.cluster_id = ${params.clusterId}::uuid
         ${excludeItemFrag}
         ${excludeSourceFrag}
+        ${scopeFrag}
     )
     SELECT item_id, title, title_zh, url, source_id, source_name, platform, source_config
     FROM ranked
@@ -787,6 +957,77 @@ export async function getClusterNamingContext(clusterId: string, limit = 8) {
   return { titles, tags, entities };
 }
 
+export async function getDataHealthSnapshot() {
+  const sqlClient = getSql();
+  const [row] = await sqlClient<{
+    sources: number;
+    enabled_sources: number;
+    items: number;
+    enrichments: number;
+    clusters: number;
+    orphan_clusters: number;
+  }[]>`
+    SELECT
+      (SELECT count(*)::int FROM sources) AS sources,
+      (SELECT count(*)::int FROM sources WHERE enabled) AS enabled_sources,
+      (SELECT count(*)::int FROM items) AS items,
+      (SELECT count(*)::int FROM item_enrichments) AS enrichments,
+      (SELECT count(*)::int FROM clusters) AS clusters,
+      (SELECT count(*)::int
+        FROM clusters c
+        WHERE NOT EXISTS (
+          SELECT 1 FROM item_enrichments ie WHERE ie.cluster_id = c.id
+        )
+      ) AS orphan_clusters
+  `;
+  return {
+    sources: row?.sources ?? 0,
+    enabledSources: row?.enabled_sources ?? 0,
+    items: row?.items ?? 0,
+    enrichments: row?.enrichments ?? 0,
+    clusters: row?.clusters ?? 0,
+    orphanClusters: row?.orphan_clusters ?? 0,
+  };
+}
+
+export async function logAssistantAction(input: {
+  requestId: string;
+  actor: string;
+  role: string;
+  tool: string;
+  status: string;
+  inputSummary?: string;
+  outputSummary?: string;
+  errorMessage?: string;
+  latencyMs?: number;
+}) {
+  const db = getDb();
+  const rows = await db
+    .insert(assistantActions)
+    .values({
+      requestId: input.requestId,
+      actor: input.actor,
+      role: input.role,
+      tool: input.tool,
+      status: input.status,
+      inputSummary: input.inputSummary ?? null,
+      outputSummary: input.outputSummary ?? null,
+      errorMessage: input.errorMessage ?? null,
+      latencyMs: input.latencyMs ?? null,
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function listAssistantActions(limit = 100) {
+  const db = getDb();
+  return db
+    .select()
+    .from(assistantActions)
+    .orderBy(desc(assistantActions.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 500));
+}
+
 export type ItemListRow = {
   id: string;
   sourceId: string;
@@ -818,6 +1059,7 @@ async function listCuratedItems(params: {
   before?: Date;
   /** Lower bound on COALESCE(published_at, fetched_at) for time-range filters. */
   publishedSince?: Date;
+  audience?: "public" | "personal";
   platform?: string;
   q?: string;
   tags?: string[];
@@ -831,12 +1073,14 @@ async function listCuratedItems(params: {
   );
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const publishedSinceIso = params.publishedSince?.toISOString();
+  const scope = audienceToSourceScope(params.audience);
   const qLike = params.q ? `%${params.q}%` : null;
   const tagsLiteral =
     params.tags && params.tags.length > 0
       ? `{${params.tags.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(",")}}`
       : null;
 
+  const scopeFrag = scope ? pg`AND sources.scope = ${scope}` : pg``;
   const platformFrag = params.platform ? pg`AND sources.kind = ${params.platform}` : pg``;
   const qFrag =
     params.q && qLike
@@ -903,6 +1147,7 @@ async function listCuratedItems(params: {
       INNER JOIN item_enrichments ie ON ie.item_id = items.id AND ie.cluster_id IS NOT NULL
       INNER JOIN clusters c ON c.id = ie.cluster_id AND c.item_count >= ${curatedMinClusterSize}
       WHERE true
+        ${scopeFrag}
         ${platformFrag}
         ${qFrag}
         ${tagsFrag}
@@ -999,6 +1244,7 @@ export async function listItems(params: {
   before?: Date;
   /** Lower bound on COALESCE(published_at, fetched_at) for time-range filters. */
   publishedSince?: Date;
+  audience?: "public" | "personal";
   platform?: string;
   q?: string;
   tags?: string[];
@@ -1013,8 +1259,12 @@ export async function listItems(params: {
   const db = getDb();
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const publishedSinceIso = params.publishedSince?.toISOString();
+  const scope = audienceToSourceScope(params.audience);
   const clauses: SQL[] = [];
   const sortBy = params.sortBy ?? "published";
+  if (scope) {
+    clauses.push(eq(sources.scope, scope));
+  }
   if (params.before) {
     if (sortBy === "published") {
       clauses.push(sql`COALESCE(${items.publishedAt}, ${items.fetchedAt}) < ${params.before.toISOString()}::timestamptz`);
@@ -1240,8 +1490,36 @@ export async function deleteKeywordRule(id: string) {
   return rows.length > 0;
 }
 
-export type StatsRange = "7d" | "30d" | "90d" | "custom";
+export type StatsRange = "24h" | "72h" | "7d" | "30d" | "90d" | "custom";
 export type StatsClusterSort = "hybrid" | "sources" | "items" | "recency" | "cohesion";
+type SourceScope = "public_seed" | "personal";
+
+export function audienceToSourceScope(audience?: "public" | "personal"): SourceScope | null {
+  if (audience === "public") return null;
+  if (audience === "personal") return "personal";
+  return null;
+}
+
+function normalizeSourceScope(scope?: string | null): SourceScope {
+  return scope === "public_seed" ? "public_seed" : "personal";
+}
+
+export type HotspotTopicState = "named" | "generated" | "provisional" | "fallback";
+
+type HotspotWindowPolicy = {
+  consensusMinSources: number;
+  breakingMinSources: number;
+  breakingMaxAgeHours: number;
+  consensusTitleConfidence: number;
+  breakingTitleConfidence: number;
+};
+
+type HotspotTitleMeta = {
+  displayTitle: string;
+  topicState: HotspotTopicState;
+  nameConfidence: number;
+  selectionWindow: string;
+};
 
 function safeEnvWeight(name: string, fallback: number) {
   const parsed = Number.parseFloat(process.env[name] ?? "");
@@ -1270,8 +1548,356 @@ function normalizeWeights(raw: {
   };
 }
 
+function getHotspotWindowPolicy(range: StatsRange): HotspotWindowPolicy {
+  switch (range) {
+    case "24h":
+      return {
+        consensusMinSources: 2,
+        breakingMinSources: 1,
+        breakingMaxAgeHours: 24,
+        consensusTitleConfidence: 0.55,
+        breakingTitleConfidence: 0.45,
+      };
+    case "72h":
+      return {
+        consensusMinSources: 2,
+        breakingMinSources: 1,
+        breakingMaxAgeHours: 48,
+        consensusTitleConfidence: 0.6,
+        breakingTitleConfidence: 0.5,
+      };
+    case "7d":
+      return {
+        consensusMinSources: 3,
+        breakingMinSources: 2,
+        breakingMaxAgeHours: 72,
+        consensusTitleConfidence: 0.7,
+        breakingTitleConfidence: 0.6,
+      };
+    case "30d":
+      return {
+        consensusMinSources: 3,
+        breakingMinSources: 2,
+        breakingMaxAgeHours: 96,
+        consensusTitleConfidence: 0.8,
+        breakingTitleConfidence: 0.68,
+      };
+    case "90d":
+      return {
+        consensusMinSources: 4,
+        breakingMinSources: 2,
+        breakingMaxAgeHours: 120,
+        consensusTitleConfidence: 0.82,
+        breakingTitleConfidence: 0.7,
+      };
+    default:
+      return {
+        consensusMinSources: 3,
+        breakingMinSources: 2,
+        breakingMaxAgeHours: 96,
+        consensusTitleConfidence: 0.75,
+        breakingTitleConfidence: 0.65,
+      };
+  }
+}
+
+function normalizeDisplayText(text: string | null | undefined) {
+  return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeKeywordText(text: string | null | undefined) {
+  return normalizeDisplayText(text).toLowerCase();
+}
+
+function isGenericHotspotTitle(text: string) {
+  const key = normalizeDisplayText(text).toLowerCase();
+  if (!key || key.length < 4) return true;
+  return new Set([
+    "event",
+    "hotspot",
+    "news",
+    "clustered event",
+    "related",
+    "update",
+    "topic",
+  ]).has(key);
+}
+function pickRepresentativeTitle(titles: string[]) {
+  for (const title of titles) {
+    const normalized = normalizeDisplayText(title);
+    if (!normalized) continue;
+    if (isGenericHotspotTitle(normalized)) continue;
+    return normalized.slice(0, 80);
+  }
+  return null;
+}
+
+function normalizeSourceLead(sourceNames: string | null) {
+  const normalized = normalizeDisplayText(sourceNames);
+  if (!normalized) return null;
+  return normalized
+    .split(/\s*(?:\||\/|,|;|、|，|；)\s*/)
+    .map((part) => part.trim())
+    .find(Boolean) ?? null;
+}
+
+function buildHotspotTitleMeta(input: {
+  topic: string | null;
+  topicSource?: string | null;
+  titles: string[];
+  sourceNames: string | null;
+  distinctSources: number;
+  weightedDistinctSources: number;
+  selectionWindow: string;
+}): HotspotTitleMeta {
+  const stableTopic = normalizeDisplayText(input.topic);
+  if (stableTopic && !isGenericHotspotTitle(stableTopic)) {
+    const named = input.topicSource === "llm" || input.topicSource === "agent";
+    return {
+      displayTitle: stableTopic.slice(0, 80),
+      topicState: named ? "named" : "generated",
+      nameConfidence: named ? 0.95 : 0.82,
+      selectionWindow: input.selectionWindow,
+    };
+  }
+
+  const sampleTitle = pickRepresentativeTitle(input.titles);
+  if (sampleTitle) {
+    const confidence =
+      Math.min(
+        0.88,
+        0.42 + Math.min(input.distinctSources, 4) * 0.1 + Math.min(input.weightedDistinctSources, 6) * 0.03,
+      ) || 0.55;
+    return {
+      displayTitle: sampleTitle,
+      topicState: "provisional",
+      nameConfidence: confidence,
+      selectionWindow: input.selectionWindow,
+    };
+  }
+
+  const sourceLead = normalizeSourceLead(input.sourceNames);
+  if (sourceLead) {
+    return {
+      displayTitle: `${sourceLead} 相关事件`,
+      topicState: "fallback",
+      nameConfidence: 0.25,
+      selectionWindow: input.selectionWindow,
+    };
+  }
+
+  return {
+    displayTitle: `待命名事件 · ${input.selectionWindow}`,
+    topicState: "fallback",
+    nameConfidence: 0.12,
+    selectionWindow: input.selectionWindow,
+  };
+}
+
+function sourceTierWeights() {
+  return {
+    tier1: safeEnvWeight("SOURCE_QUALITY_TIER1_WEIGHT", 1),
+    tier2: safeEnvWeight("SOURCE_QUALITY_TIER2_WEIGHT", 0.65),
+    tier3: safeEnvWeight("SOURCE_QUALITY_TIER3_WEIGHT", 0.35),
+  };
+}
+
+function sourceQualityWeight(name: string, kind: string) {
+  const weights = sourceTierWeights();
+  const lower = name.toLowerCase();
+  if (
+    /openai|anthropic|deepmind|google ai|google deepmind|hugging face|meta ai|microsoft ai|nvidia|deepseek|qwen|moonshot|kimi|simon willison|dwarkesh|interconnects|gary marcus|where.?s your ed at|max woolf/.test(
+      lower,
+    )
+  ) {
+    return weights.tier1;
+  }
+  if (kind === "hn" || kind === "x-rsshub") return 0.85;
+  if (/techcrunch|the verge|wired|venturebeat|infoq|36kr|datawhale|founder park/.test(lower)) {
+    return weights.tier2;
+  }
+  return weights.tier3;
+}
+
+function logScaled(value: number) {
+  return Math.log1p(Math.max(0, value));
+}
+
+function normalizeScore(value: number, maxValue: number) {
+  if (maxValue <= 0) return 0;
+  return value / maxValue;
+}
+
+export function toDateValue(value: Date | string | number | null | undefined) {
+  if (value == null) return null;
+  if (value instanceof Date) return value;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+export function dateTimeValue(value: Date | string | number | null | undefined) {
+  return toDateValue(value)?.getTime() ?? 0;
+}
+
+function burstVelocityRaw(items1h: number, itemsPrev3h: number, items12h: number) {
+  const baseline = itemsPrev3h / 3;
+  return Math.max(0, items1h * 2 - baseline) + items1h / (baseline + 1) + logScaled(items12h);
+}
+function recencyScoreForDate(date: Date | string | number | null | undefined, halfLifeHours = 48) {
+  const value = dateTimeValue(date);
+  if (!value) return 0;
+  const ageHours = Math.max(0, (Date.now() - value) / 3600000);
+  return Math.exp(-ageHours / Math.max(1, halfLifeHours));
+}
+
+function metricNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function summarizePlatformMetrics(metrics: unknown) {
+  if (!metrics || typeof metrics !== "object" || Array.isArray(metrics)) {
+    return { x: 0, hn: 0 };
+  }
+  const record = metrics as Record<string, unknown>;
+  const x = record.x && typeof record.x === "object" && !Array.isArray(record.x)
+    ? (record.x as Record<string, unknown>)
+    : {};
+  const hn = record.hn && typeof record.hn === "object" && !Array.isArray(record.hn)
+    ? (record.hn as Record<string, unknown>)
+    : {};
+  const xScore = metricNumber(x.posts)
+    + metricNumber(x.replies)
+    + metricNumber(x.reposts)
+    + metricNumber(x.likes)
+    + metricNumber(x.quotes)
+    + metricNumber(x.views);
+  const hnScore = metricNumber(hn.posts) + metricNumber(hn.points) + metricNumber(hn.comments);
+  return { x: xScore, hn: hnScore };
+}
+
+export async function updateClusterHotspotStats(clusterId: string): Promise<void> {
+  const sqlClient = getSql();
+  const db = getDb();
+  const rows = await sqlClient<
+    {
+      id: string;
+      last_seen_at: Date;
+      item_count: number;
+      distinct_sources: number;
+      distinct_platforms: number;
+      source_entries: unknown;
+      platform_metrics_entries: unknown;
+      latest_item_at: Date | null;
+      cohesion_score: number | null;
+      items_1h: number;
+      items_prev_3h: number;
+      items_12h: number;
+    }[]
+  >`
+    SELECT
+      c.id,
+      c.last_seen_at,
+      COUNT(*)::int AS item_count,
+      COUNT(DISTINCT i.source_id)::int AS distinct_sources,
+      COUNT(DISTINCT s.kind)::int AS distinct_platforms,
+      JSONB_AGG(DISTINCT JSONB_BUILD_OBJECT('id', i.source_id::text, 'name', s.name, 'kind', s.kind)) AS source_entries,
+      JSONB_AGG(ie.platform_metrics) AS platform_metrics_entries,
+      MAX(i.fetched_at) AS latest_item_at,
+      AVG(
+        CASE
+          WHEN c.centroid_embedding IS NULL OR ie.embedding IS NULL THEN NULL
+          ELSE (1 - (ie.embedding <=> c.centroid_embedding))
+        END
+      )::float AS cohesion_score,
+      SUM(CASE WHEN i.fetched_at >= now() - interval '1 hour' THEN 1 ELSE 0 END)::int AS items_1h,
+      SUM(
+        CASE
+          WHEN i.fetched_at >= now() - interval '4 hours'
+           AND i.fetched_at < now() - interval '1 hour'
+          THEN 1 ELSE 0 END
+      )::int AS items_prev_3h,
+      SUM(CASE WHEN i.fetched_at >= now() - interval '12 hours' THEN 1 ELSE 0 END)::int AS items_12h
+    FROM clusters c
+    INNER JOIN item_enrichments ie ON ie.cluster_id = c.id
+    INNER JOIN items i ON i.id = ie.item_id
+    INNER JOIN sources s ON s.id = i.source_id
+    WHERE c.id = ${clusterId}::uuid
+    GROUP BY c.id, c.last_seen_at
+  `;
+  const row = rows[0];
+  if (!row) return;
+
+  const sourceEntriesRaw = Array.isArray(row.source_entries) ? row.source_entries : [];
+  const sourceMap = new Map<string, { id: string; name: string; kind: string }>();
+  for (const entry of sourceEntriesRaw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id : "";
+    const name = typeof record.name === "string" ? record.name : "";
+    const kind = typeof record.kind === "string" ? record.kind : "rss";
+    if (!id || sourceMap.has(id)) continue;
+    sourceMap.set(id, { id, name, kind });
+  }
+  const sourceEntries = [...sourceMap.values()];
+  const sourceWeights = sourceEntries.map((entry) => sourceQualityWeight(entry.name, entry.kind));
+  const weightedDistinctSources = sourceWeights.reduce((acc, value) => acc + value, 0);
+  const sourceQualityScore = sourceWeights.length > 0 ? weightedDistinctSources / sourceWeights.length : 0;
+  const platformTotals = (Array.isArray(row.platform_metrics_entries) ? row.platform_metrics_entries : [])
+    .reduce(
+      (acc: { x: number; hn: number }, metrics) => {
+        const scored = summarizePlatformMetrics(metrics);
+        acc.x += scored.x;
+        acc.hn += scored.hn;
+        return acc;
+      },
+      { x: 0, hn: 0 },
+    );
+  const xSignalScore = logScaled(platformTotals.x);
+  const hnSignalScore = logScaled(platformTotals.hn);
+  const burstVelocity = burstVelocityRaw(row.items_1h, row.items_prev_3h, row.items_12h);
+  const recencyScore = recencyScoreForDate(row.latest_item_at ?? row.last_seen_at, 48);
+  const breakingRecencyScore = recencyScoreForDate(row.latest_item_at ?? row.last_seen_at, 24);
+  const crossPlatformScore = normalizeScore(row.distinct_platforms, 4);
+  const consensusScore =
+    safeEnvWeight("HOTSPOT_CONSENSUS_W_SOURCES", 0.42) * normalizeScore(weightedDistinctSources, 6) +
+    safeEnvWeight("HOTSPOT_CONSENSUS_W_ITEMS", 0.18) * normalizeScore(row.item_count, 20) +
+    safeEnvWeight("HOTSPOT_CONSENSUS_W_RECENCY", 0.16) * recencyScore +
+    safeEnvWeight("HOTSPOT_CONSENSUS_W_COHESION", 0.08) * (row.cohesion_score ?? 0.5) +
+    safeEnvWeight("HOTSPOT_CONSENSUS_W_CROSS_PLATFORM", 0.16) * crossPlatformScore;
+  const breakingScore =
+    safeEnvWeight("HOTSPOT_BREAKING_W_VELOCITY", 0.34) * normalizeScore(burstVelocity, 10) +
+    safeEnvWeight("HOTSPOT_BREAKING_W_SOURCE_QUALITY", 0.18) * sourceQualityScore +
+    safeEnvWeight("HOTSPOT_BREAKING_W_X", 0.2) * normalizeScore(xSignalScore, 20) +
+    safeEnvWeight("HOTSPOT_BREAKING_W_HN", 0.1) * normalizeScore(hnSignalScore, 20) +
+    safeEnvWeight("HOTSPOT_BREAKING_W_RECENCY", 0.1) * breakingRecencyScore +
+    safeEnvWeight("HOTSPOT_BREAKING_W_CROSS_PLATFORM", 0.08) * crossPlatformScore;
+
+  await db
+    .update(clusters)
+    .set({
+      itemCount: row.item_count,
+      distinctSources: row.distinct_sources,
+      weightedDistinctSources: Math.round(weightedDistinctSources * 100),
+      crossPlatformScore: Math.round(crossPlatformScore * 1000),
+      breakingScore: Math.round(breakingScore * 1000),
+      consensusScore: Math.round(consensusScore * 1000),
+      burstVelocity: Math.round(burstVelocity * 1000),
+      xSignalScore: Math.round(xSignalScore * 1000),
+      hnSignalScore: Math.round(hnSignalScore * 1000),
+      hotspotScore: Math.round(Math.max(consensusScore, breakingScore) * 1000),
+      lastSeenAt: row.latest_item_at ?? row.last_seen_at ?? new Date(),
+    })
+    .where(eq(clusters.id, clusterId));
+}
+
 export async function getStatsOverview(params?: {
   range?: StatsRange;
+  audience?: "public" | "personal";
   platform?: string;
   tag?: string;
   compare?: boolean;
@@ -1283,7 +1909,9 @@ export async function getStatsOverview(params?: {
 }) {
   const sqlClient = getSql();
   const range = params?.range ?? "7d";
-  const fallbackDays = range === "30d" ? 30 : range === "90d" ? 90 : 7;
+  const windowPolicy = getHotspotWindowPolicy(range);
+  const fallbackDays =
+    range === "24h" ? 1 : range === "72h" ? 3 : range === "30d" ? 30 : range === "90d" ? 90 : 7;
   const endAt = params?.to ?? new Date();
   const startAt =
     params?.from ??
@@ -1297,7 +1925,11 @@ export async function getStatsOverview(params?: {
   const compare = params?.compare ?? false;
   const topN = Math.min(Math.max(params?.topN ?? 10, 3), 30);
   const minSources = Math.min(Math.max(params?.minSources ?? 2, 1), 20);
+  const consensusMinSources = Math.max(minSources, windowPolicy.consensusMinSources);
   const clusterSort = params?.clusterSort ?? "hybrid";
+  const audienceScope = audienceToSourceScope(params?.audience);
+  const scopeFrag = audienceScope ? sqlClient`AND s.scope = ${audienceScope}` : sqlClient``;
+  const scopeWhereFrag = audienceScope ? sqlClient`s.scope = ${audienceScope}` : sqlClient`true`;
   const weights = normalizeWeights({
     sources: safeEnvWeight("CLUSTER_SCORE_W_SOURCES", 0.4),
     items: safeEnvWeight("CLUSTER_SCORE_W_ITEMS", 0.3),
@@ -1313,8 +1945,19 @@ export async function getStatsOverview(params?: {
     : sqlClient``;
   const compareFrag = compare
     ? sqlClient`
-      (SELECT count(*)::int FROM items WHERE fetched_at >= ${prevStartAt.toISOString()}::timestamptz AND fetched_at < ${prevEndAt.toISOString()}::timestamptz) AS items_prev_window,
-      (SELECT count(*)::int FROM sources WHERE last_ok_at >= ${prevStartAt.toISOString()}::timestamptz AND last_ok_at < ${prevEndAt.toISOString()}::timestamptz) AS active_sources_prev_window,
+      (SELECT count(*)::int
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        WHERE i.fetched_at >= ${prevStartAt.toISOString()}::timestamptz
+          AND i.fetched_at < ${prevEndAt.toISOString()}::timestamptz
+          ${scopeFrag}
+      ) AS items_prev_window,
+      (SELECT count(*)::int
+        FROM sources s
+        WHERE s.last_ok_at >= ${prevStartAt.toISOString()}::timestamptz
+          AND s.last_ok_at < ${prevEndAt.toISOString()}::timestamptz
+          ${scopeFrag}
+      ) AS active_sources_prev_window,
       (
         SELECT count(*)::int
         FROM (
@@ -1324,11 +1967,12 @@ export async function getStatsOverview(params?: {
           INNER JOIN sources s ON s.id = i.source_id
           WHERE i.fetched_at >= ${prevStartAt.toISOString()}::timestamptz
             AND i.fetched_at < ${prevEndAt.toISOString()}::timestamptz
+            ${scopeFrag}
             AND ie.cluster_id IS NOT NULL
             ${platformFrag}
             ${tagFrag}
           GROUP BY ie.cluster_id
-          HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+          HAVING COUNT(DISTINCT i.source_id) >= ${consensusMinSources}
         ) prev_clusters
       ) AS clusters_prev_window
     `
@@ -1354,13 +1998,50 @@ export async function getStatsOverview(params?: {
     }[]
   >`
     SELECT
-      (SELECT count(*)::int FROM items) AS total_items,
-      (SELECT count(*)::int FROM items WHERE fetched_at > now() - interval '24 hours') AS items_24h,
-      (SELECT count(*)::int FROM sources) AS total_sources,
-      (SELECT count(*)::int FROM sources WHERE last_ok_at > now() - interval '7 days') AS active_sources,
-      (SELECT count(*)::int FROM clusters) AS total_clusters,
-      (SELECT count(*)::int FROM items WHERE fetched_at >= ${startAt.toISOString()}::timestamptz AND fetched_at < ${endAt.toISOString()}::timestamptz) AS items_window,
-      (SELECT count(*)::int FROM sources WHERE last_ok_at >= ${startAt.toISOString()}::timestamptz AND last_ok_at < ${endAt.toISOString()}::timestamptz) AS active_sources_window,
+      (SELECT count(*)::int
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        WHERE ${scopeWhereFrag}
+      ) AS total_items,
+      (SELECT count(*)::int
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        WHERE i.fetched_at > now() - interval '24 hours'
+          ${scopeFrag}
+      ) AS items_24h,
+      (SELECT count(*)::int
+        FROM sources s
+        WHERE ${scopeWhereFrag}
+      ) AS total_sources,
+      (SELECT count(*)::int
+        FROM sources s
+        WHERE s.last_ok_at > now() - interval '7 days'
+          ${scopeFrag}
+      ) AS active_sources,
+      (SELECT count(*)::int
+        FROM clusters c
+        WHERE EXISTS (
+          SELECT 1
+          FROM item_enrichments ie
+          INNER JOIN items i ON i.id = ie.item_id
+          INNER JOIN sources s ON s.id = i.source_id
+          WHERE ie.cluster_id = c.id
+            ${scopeFrag}
+        )
+      ) AS total_clusters,
+      (SELECT count(*)::int
+        FROM items i
+        INNER JOIN sources s ON s.id = i.source_id
+        WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+          AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+          ${scopeFrag}
+      ) AS items_window,
+      (SELECT count(*)::int
+        FROM sources s
+        WHERE s.last_ok_at >= ${startAt.toISOString()}::timestamptz
+          AND s.last_ok_at < ${endAt.toISOString()}::timestamptz
+          ${scopeFrag}
+      ) AS active_sources_window,
       (
         SELECT count(*)::int
         FROM (
@@ -1374,7 +2055,7 @@ export async function getStatsOverview(params?: {
             ${platformFrag}
             ${tagFrag}
           GROUP BY ie.cluster_id
-          HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+          HAVING COUNT(DISTINCT i.source_id) >= ${consensusMinSources}
         ) clusters_filtered
       ) AS clusters_window,
       ${compareFrag}
@@ -1393,19 +2074,121 @@ export async function getStatsOverview(params?: {
     ORDER BY count DESC
   `;
 
-  const topTags = await sqlClient<{ tag: string; count: number }[]>`
-    SELECT unnest(ie.tags) AS tag, count(*)::int AS count
-    FROM item_enrichments ie
-    INNER JOIN items i ON i.id = ie.item_id
+  const keywordRows = await sqlClient<
+    {
+      source_id: string;
+      source_name: string;
+      source_kind: string;
+      latest_item_at: Date | string;
+      title: string | null;
+      content_text: string | null;
+      title_zh: string | null;
+      content_zh: string | null;
+    }[]
+  >`
+    SELECT
+      i.source_id::text AS source_id,
+      s.name AS source_name,
+      s.kind AS source_kind,
+      i.fetched_at AS latest_item_at,
+      i.title,
+      i.content_text,
+      ie.title_zh,
+      ie.content_zh
+    FROM items i
     INNER JOIN sources s ON s.id = i.source_id
-    WHERE ie.enriched_at >= ${startAt.toISOString()}::timestamptz
-      AND ie.enriched_at < ${endAt.toISOString()}::timestamptz
+    LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+    WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+      AND i.fetched_at < ${endAt.toISOString()}::timestamptz
       ${platformFrag}
       ${tagFrag}
-    GROUP BY tag
-    ORDER BY count DESC
-    LIMIT ${topN}
+    ORDER BY i.fetched_at DESC
   `;
+
+  const keywordStats = new Map<
+    string,
+    {
+      keyword: string;
+      mentions: number;
+      distinct_sources: number;
+      source_names: string | null;
+      source_entries: Map<string, { id: string; name: string; kind: string }>;
+      latest_item_at: Date | null;
+      document_count: number;
+    }
+  >();
+  const totalKeywordDocuments = keywordRows.length;
+
+  for (const row of keywordRows) {
+    const text = [
+      row.title_zh,
+      row.title,
+      row.content_zh,
+      row.content_text,
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join(" ");
+    const keywords = extractAttentionKeywords(text);
+    if (keywords.length === 0) continue;
+    const uniqueKeywords = [...new Set(keywords)];
+    for (const keyword of uniqueKeywords) {
+      const key = keyword.trim().toLowerCase();
+      if (!key) continue;
+      const latestItemAt = toDateValue(row.latest_item_at);
+      const current =
+        keywordStats.get(key) ??
+        {
+          keyword: key,
+          mentions: 0,
+          distinct_sources: 0,
+          source_names: null,
+          source_entries: new Map<string, { id: string; name: string; kind: string }>(),
+          latest_item_at: null,
+          document_count: 0,
+        };
+      current.mentions += 1;
+      current.document_count += 1;
+      if (!current.source_entries.has(row.source_id)) {
+        current.source_entries.set(row.source_id, {
+          id: row.source_id,
+          name: row.source_name,
+          kind: row.source_kind,
+        });
+      }
+      current.distinct_sources = current.source_entries.size;
+      current.latest_item_at =
+        current.latest_item_at && latestItemAt && dateTimeValue(current.latest_item_at) > dateTimeValue(latestItemAt)
+          ? current.latest_item_at
+          : latestItemAt;
+      keywordStats.set(key, current);
+    }
+  }
+
+  const topTags = [...keywordStats.values()]
+    .map((row) => ({
+      ...row,
+      source_names: [...row.source_entries.values()]
+        .map((entry) => entry.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+        .join(" / "),
+      source_entries: [...row.source_entries.values()],
+      inverse_document_frequency:
+        totalKeywordDocuments > 0
+          ? Math.log((1 + totalKeywordDocuments) / (1 + Math.max(1, row.document_count))) + 1
+          : 1,
+    }))
+    .sort((a, b) => {
+      const aScore = a.mentions * a.inverse_document_frequency * (1 + Math.log1p(a.distinct_sources));
+      const bScore = b.mentions * b.inverse_document_frequency * (1 + Math.log1p(b.distinct_sources));
+      if (bScore !== aScore) return bScore - aScore;
+      if (b.distinct_sources !== a.distinct_sources) return b.distinct_sources - a.distinct_sources;
+      if (b.mentions !== a.mentions) return b.mentions - a.mentions;
+      const aMs = dateTimeValue(a.latest_item_at);
+      const bMs = dateTimeValue(b.latest_item_at);
+      return bMs - aMs;
+    })
+    .slice(0, topN);
 
   const scoreOrder =
     clusterSort === "sources"
@@ -1421,9 +2204,11 @@ export async function getStatsOverview(params?: {
   const topClusters = await sqlClient<{
     id: string;
     topic: string | null;
+    topic_source: string | null;
     item_count: number;
     last_seen_at: Date;
     distinct_sources: number;
+    source_names: string | null;
     items_window: number;
     recency_score: number;
     cohesion_score: number;
@@ -1433,10 +2218,12 @@ export async function getStatsOverview(params?: {
       SELECT
         c.id,
         c.topic,
+        c.topic_source,
         c.item_count,
         c.last_seen_at,
         COUNT(*)::int AS items_window,
         COUNT(DISTINCT i.source_id)::int AS distinct_sources,
+        STRING_AGG(DISTINCT s.name, ' / ' ORDER BY s.name) AS source_names,
         MAX(i.fetched_at) AS latest_item_at,
         AVG(
           CASE
@@ -1452,8 +2239,8 @@ export async function getStatsOverview(params?: {
         AND i.fetched_at < ${endAt.toISOString()}::timestamptz
         ${platformFrag}
         ${tagFrag}
-      GROUP BY c.id, c.topic, c.item_count, c.last_seen_at
-      HAVING COUNT(DISTINCT i.source_id) >= ${minSources}
+      GROUP BY c.id, c.topic, c.topic_source, c.item_count, c.last_seen_at
+      HAVING COUNT(DISTINCT i.source_id) >= ${consensusMinSources}
     ),
     maxv AS (
       SELECT
@@ -1464,9 +2251,11 @@ export async function getStatsOverview(params?: {
     SELECT
       cs.id,
       cs.topic,
+      cs.topic_source,
       cs.item_count,
       cs.last_seen_at,
       cs.distinct_sources,
+      cs.source_names,
       cs.items_window,
       EXP(-GREATEST(EXTRACT(EPOCH FROM (now() - COALESCE(cs.latest_item_at, cs.last_seen_at))) / 3600.0, 0) / 48.0)::float AS recency_score,
       COALESCE(cs.cohesion_score, 0.5)::float AS cohesion_score,
@@ -1481,6 +2270,59 @@ export async function getStatsOverview(params?: {
     ORDER BY ${scoreOrder}
     LIMIT ${topN}
   `;
+
+  const keywordSourceMax = Math.max(
+    ...topTags.map((row) => row.distinct_sources ?? 0),
+    1,
+  );
+  const keywordMentionMax = Math.max(
+    ...topTags.map((row) => row.mentions ?? 0),
+    1,
+  );
+  const keywordGroups = topTags.map((row) => {
+    const sourceEntriesRaw = Array.isArray(row.source_entries) ? row.source_entries : [];
+    const sourceMap = new Map<string, { id: string; name: string; kind: string }>();
+    for (const entry of sourceEntriesRaw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id : "";
+      const name = typeof record.name === "string" ? record.name : "";
+      const kind = typeof record.kind === "string" ? record.kind : "rss";
+      if (!id || sourceMap.has(id)) continue;
+      sourceMap.set(id, { id, name, kind });
+    }
+    const sourceEntries = [...sourceMap.values()];
+    const sourceWeights = sourceEntries.map((entry) => sourceQualityWeight(entry.name, entry.kind));
+    const weightedDistinctSources = sourceWeights.reduce((acc, value) => acc + value, 0);
+    const keywordConsistency =
+      row.mentions > 0 ? Math.min(1, weightedDistinctSources / row.mentions) : 0;
+    const recencyScore = recencyScoreForDate(row.latest_item_at, 72);
+    const inverseDocumentFrequency = metricNumber(row.inverse_document_frequency);
+    const idfScore = normalizeScore(inverseDocumentFrequency, 4);
+    const attentionScore =
+      normalizeScore(weightedDistinctSources, keywordSourceMax) * 0.35 +
+      normalizeScore(row.mentions, keywordMentionMax) * 0.25 +
+      idfScore * 0.15 +
+      recencyScore * 0.15 +
+      keywordConsistency * 0.1;
+    return {
+      keyword: normalizeKeywordText(row.keyword),
+      displayTitle: normalizeDisplayText(row.keyword),
+      attentionScore: Number(attentionScore.toFixed(4)),
+      keywordConsistency: Number(keywordConsistency.toFixed(4)),
+      mentions: row.mentions,
+      distinctSources: row.distinct_sources,
+      weightedDistinctSources: Number(weightedDistinctSources.toFixed(2)),
+      sourceNames: row.source_names ?? "",
+      selectionWindow: range,
+      whyAttention: [
+        `${row.distinct_sources} distinct source${row.distinct_sources === 1 ? "" : "s"}`,
+        `${row.mentions} mention${row.mentions === 1 ? "" : "s"} in window`,
+        `${weightedDistinctSources.toFixed(2)} weighted source coverage`,
+        `${inverseDocumentFrequency.toFixed(2)} inverse document weight`,
+      ],
+    };
+  });
 
   const trend = await sqlClient<{
     day: Date;
@@ -1523,7 +2365,7 @@ export async function getStatsOverview(params?: {
         day,
         count(*)::int AS clusters_count
       FROM day_cluster_sources
-      WHERE distinct_sources >= ${minSources}
+      WHERE distinct_sources >= ${consensusMinSources}
       GROUP BY day
     ),
     day_hotspots AS (
@@ -1545,13 +2387,13 @@ export async function getStatsOverview(params?: {
         GROUP BY day, ie.cluster_id
       ),
       cluster_day_max AS (
-        SELECT
-          day,
-          GREATEST(MAX(distinct_sources), 1)::float AS max_sources,
-          GREATEST(MAX(items_window), 1)::float AS max_items
-        FROM cluster_day
-        WHERE distinct_sources >= ${minSources}
-        GROUP BY day
+      SELECT
+        day,
+        GREATEST(MAX(distinct_sources), 1)::float AS max_sources,
+        GREATEST(MAX(items_window), 1)::float AS max_items
+      FROM cluster_day
+      WHERE distinct_sources >= ${consensusMinSources}
+      GROUP BY day
       )
       SELECT
         cd.day,
@@ -1559,10 +2401,10 @@ export async function getStatsOverview(params?: {
           ${weights.sources} * (cd.distinct_sources / cdm.max_sources)
           + ${weights.items} * (cd.items_window / cdm.max_items)
           + ${weights.recency} * EXP(-GREATEST(EXTRACT(EPOCH FROM (now() - cd.latest_item_at)) / 3600.0, 0) / 48.0)
-        )::float AS hotspot_index
+      )::float AS hotspot_index
       FROM cluster_day cd
       INNER JOIN cluster_day_max cdm ON cdm.day = cd.day
-      WHERE cd.distinct_sources >= ${minSources}
+      WHERE cd.distinct_sources >= ${consensusMinSources}
       GROUP BY cd.day
     )
     SELECT
@@ -1596,13 +2438,13 @@ export async function getStatsOverview(params?: {
         ${platformFrag}
         ${tagFrag}
       GROUP BY ie.cluster_id
-    )
+      )
     SELECT
       count(*)::int AS total_clusters_window,
-      count(*) FILTER (WHERE distinct_sources >= 2)::int AS cross_source_clusters_window
+      count(*) FILTER (WHERE distinct_sources >= ${consensusMinSources})::int AS cross_source_clusters_window
       ,
       count(*) FILTER (WHERE distinct_sources = 2)::int AS two_source_clusters_window,
-      count(*) FILTER (WHERE distinct_sources >= ${minSources})::int AS min_source_clusters_window
+      count(*) FILTER (WHERE distinct_sources >= ${consensusMinSources})::int AS min_source_clusters_window
     FROM cluster_stats
   `;
 
@@ -1633,6 +2475,7 @@ export async function getStatsOverview(params?: {
       platform: params?.platform ?? null,
       tag: params?.tag ?? null,
       compare,
+      audience: params?.audience ?? null,
       minSources,
       clusterSort,
       from: startAt,
@@ -1645,13 +2488,58 @@ export async function getStatsOverview(params?: {
     topClusters: topClusters.map((c) => ({
       id: c.id,
       topic: c.topic,
+      topicSource: c.topic_source,
       itemCount: c.item_count,
       lastSeenAt: c.last_seen_at,
       distinctSources: c.distinct_sources,
+      sourceNames: c.source_names ?? "",
       itemsWindow: c.items_window,
       recencyScore: c.recency_score,
       cohesionScore: c.cohesion_score,
       hybridScore: c.hybrid_score,
+      attentionScore: c.hybrid_score,
+      keywordConsistency:
+        c.items_window > 0 ? Number((c.distinct_sources / c.items_window).toFixed(4)) : 0,
+      whyAttention: [
+        `${c.distinct_sources} distinct source${c.distinct_sources === 1 ? "" : "s"}`,
+        `${c.items_window} item${c.items_window === 1 ? "" : "s"} in window`,
+        `recency score ${c.recency_score.toFixed(2)}`,
+      ],
+      ...buildHotspotTitleMeta({
+        topic: c.topic,
+        topicSource: c.topic_source,
+        titles: [],
+        sourceNames: c.source_names ?? "",
+        distinctSources: c.distinct_sources,
+        weightedDistinctSources: c.distinct_sources,
+        selectionWindow: range,
+      }),
+    })),
+    keywordGroups,
+    topicGroups: topClusters.map((c) => ({
+      id: c.id,
+      displayTitle: c.topic,
+      attentionScore: c.hybrid_score,
+      keywordConsistency:
+        c.items_window > 0 ? Number((c.distinct_sources / c.items_window).toFixed(4)) : 0,
+      topicState:
+        (buildHotspotTitleMeta({
+          topic: c.topic,
+          topicSource: c.topic_source,
+          titles: [],
+          sourceNames: c.source_names ?? "",
+          distinctSources: c.distinct_sources,
+          weightedDistinctSources: c.distinct_sources,
+          selectionWindow: range,
+        }).topicState ?? "fallback"),
+      whyAttention: [
+        `${c.distinct_sources} distinct source${c.distinct_sources === 1 ? "" : "s"}`,
+        `${c.items_window} item${c.items_window === 1 ? "" : "s"} in window`,
+      ],
+      selectionWindow: range,
+      sourceNames: c.source_names ?? "",
+      distinctSources: c.distinct_sources,
+      itemsWindow: c.items_window,
     })),
     trend: trend.map((row) => ({
       day: row.day,
@@ -1662,6 +2550,7 @@ export async function getStatsOverview(params?: {
     })),
     hotspot: {
       hotspotIndex: Number(topClusters.reduce((acc, c) => acc + c.hybrid_score, 0).toFixed(4)),
+      attentionIndex: Number(topClusters.reduce((acc, c) => acc + c.hybrid_score, 0).toFixed(4)),
       totalClustersWindow: clusterQuality?.total_clusters_window ?? 0,
       crossSourceClustersWindow: clusterQuality?.cross_source_clusters_window ?? 0,
       crossSourceClusterRate:
@@ -1677,6 +2566,318 @@ export async function getStatsOverview(params?: {
             : 0,
         minSourceClustersWindow: clusterQuality?.min_source_clusters_window ?? 0,
       },
+    },
+  };
+}
+export async function getHotspotOverview(params?: {
+  range?: StatsRange;
+  audience?: "public" | "personal";
+  platform?: string;
+  tag?: string;
+  compare?: boolean;
+  topN?: number;
+  minSources?: number;
+  clusterSort?: StatsClusterSort;
+  from?: Date;
+  to?: Date;
+}) {
+  const overview = await getStatsOverview(params);
+  const sqlClient = getSql();
+  const range = overview.range;
+  const windowPolicy = getHotspotWindowPolicy(range);
+  const minSources = Math.min(Math.max(params?.minSources ?? 2, 1), 20);
+  const consensusMinSources = Math.max(minSources, windowPolicy.consensusMinSources);
+  const breakingMinSources = Math.max(1, windowPolicy.breakingMinSources);
+  const topN = Math.min(Math.max(params?.topN ?? 10, 3), 30);
+  const audienceScope = audienceToSourceScope(overview.filters.audience ?? undefined);
+  const scopeFrag = audienceScope ? sqlClient`AND s.scope = ${audienceScope}` : sqlClient``;
+  const platformFrag = overview.filters.platform
+    ? sqlClient`AND s.kind = ${overview.filters.platform}`
+    : sqlClient``;
+  const tagFrag = overview.filters.tag
+    ? sqlClient`AND ie.tags @> ${`{"${overview.filters.tag.replace(/"/g, '\\"')}"}`}::text[]`
+    : sqlClient``;
+  const startAt = overview.filters.from ?? new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const endAt = overview.filters.to ?? new Date();
+  const oneHourAgo = new Date(endAt.getTime() - 3600 * 1000);
+  const fourHoursAgo = new Date(endAt.getTime() - 4 * 3600 * 1000);
+  const twelveHoursAgo = new Date(endAt.getTime() - 12 * 3600 * 1000);
+
+  const clusterRows = await sqlClient<
+    {
+      id: string;
+      topic: string | null;
+      topic_source: string | null;
+      item_count: number;
+      last_seen_at: Date;
+      distinct_sources: number;
+      distinct_platforms: number;
+      source_names: string | null;
+      source_entries: unknown;
+      platform_metrics_entries: unknown;
+      items_window: number;
+      latest_item_at: Date | null;
+      cohesion_score: number | null;
+      items_1h: number;
+      items_prev_3h: number;
+      items_12h: number;
+    }[]
+  >`
+    WITH cluster_stats AS (
+      SELECT
+        c.id,
+        c.topic,
+        c.topic_source,
+        c.item_count,
+        c.last_seen_at,
+        COUNT(*)::int AS items_window,
+        COUNT(DISTINCT i.source_id)::int AS distinct_sources,
+        COUNT(DISTINCT s.kind)::int AS distinct_platforms,
+        STRING_AGG(DISTINCT s.name, ' / ' ORDER BY s.name) AS source_names,
+        JSONB_AGG(DISTINCT JSONB_BUILD_OBJECT('id', i.source_id::text, 'name', s.name, 'kind', s.kind)) AS source_entries,
+        JSONB_AGG(ie.platform_metrics) AS platform_metrics_entries,
+        MAX(i.fetched_at) AS latest_item_at,
+        AVG(
+          CASE
+            WHEN c.centroid_embedding IS NULL OR ie.embedding IS NULL THEN NULL
+            ELSE (1 - (ie.embedding <=> c.centroid_embedding))
+          END
+        )::float AS cohesion_score,
+        SUM(CASE WHEN i.fetched_at >= ${oneHourAgo.toISOString()}::timestamptz THEN 1 ELSE 0 END)::int AS items_1h,
+        SUM(
+          CASE
+            WHEN i.fetched_at >= ${fourHoursAgo.toISOString()}::timestamptz
+             AND i.fetched_at < ${oneHourAgo.toISOString()}::timestamptz
+            THEN 1 ELSE 0 END
+        )::int AS items_prev_3h,
+        SUM(CASE WHEN i.fetched_at >= ${twelveHoursAgo.toISOString()}::timestamptz THEN 1 ELSE 0 END)::int AS items_12h
+      FROM clusters c
+      INNER JOIN item_enrichments ie ON ie.cluster_id = c.id
+      INNER JOIN items i ON i.id = ie.item_id
+      INNER JOIN sources s ON s.id = i.source_id
+      WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
+        AND i.fetched_at < ${endAt.toISOString()}::timestamptz
+        ${scopeFrag}
+        ${platformFrag}
+        ${tagFrag}
+      GROUP BY c.id, c.topic, c.topic_source, c.item_count, c.last_seen_at
+    )
+    SELECT * FROM cluster_stats
+  `;
+
+  const normalizedRows = clusterRows.map((row) => {
+    const sourceEntriesRaw = Array.isArray(row.source_entries) ? row.source_entries : [];
+    const sourceMap = new Map<string, { id: string; name: string; kind: string }>();
+    for (const entry of sourceEntriesRaw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const record = entry as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id : "";
+      const name = typeof record.name === "string" ? record.name : "";
+      const kind = typeof record.kind === "string" ? record.kind : "rss";
+      if (!id) continue;
+      if (!sourceMap.has(id)) {
+        sourceMap.set(id, { id, name, kind });
+      }
+    }
+    const sourceEntries = [...sourceMap.values()];
+    const sourceWeights = sourceEntries.map((entry) => sourceQualityWeight(entry.name, entry.kind));
+    const weightedDistinctSources = sourceWeights.reduce((acc, value) => acc + value, 0);
+    const sourceQualityScore = sourceWeights.length > 0 ? weightedDistinctSources / sourceWeights.length : 0;
+    const platformMetricsEntries = Array.isArray(row.platform_metrics_entries)
+      ? row.platform_metrics_entries
+      : [];
+    const platformTotals = platformMetricsEntries.reduce(
+      (acc: { x: number; hn: number }, metrics) => {
+        const scored = summarizePlatformMetrics(metrics);
+        acc.x += scored.x;
+        acc.hn += scored.hn;
+        return acc;
+      },
+      { x: 0, hn: 0 },
+    );
+    const xSignalScore = logScaled(platformTotals.x);
+    const hnSignalScore = logScaled(platformTotals.hn);
+    const burstVelocity = burstVelocityRaw(row.items_1h, row.items_prev_3h, row.items_12h);
+    const recencyScore = recencyScoreForDate(row.latest_item_at ?? row.last_seen_at, 48);
+    const breakingRecencyScore = recencyScoreForDate(row.latest_item_at ?? row.last_seen_at, windowPolicy.breakingMaxAgeHours);
+    const crossPlatformScore = normalizeScore(row.distinct_platforms, 4);
+    const display = buildHotspotTitleMeta({
+      topic: row.topic,
+      topicSource: row.topic_source,
+      titles: [],
+      sourceNames: row.source_names ?? "",
+      distinctSources: row.distinct_sources,
+      weightedDistinctSources,
+      selectionWindow: range,
+    });
+    return {
+      ...row,
+      distinctSources: row.distinct_sources,
+      distinctPlatforms: row.distinct_platforms,
+      itemCount: row.item_count,
+      lastSeenAt: row.last_seen_at,
+      sourceNames: row.source_names ?? "",
+      sourceEntries,
+      platformMetricsEntries,
+      itemsWindow: row.items_window,
+      latestItemAt: row.latest_item_at,
+      cohesionScore: row.cohesion_score,
+      items1h: row.items_1h,
+      itemsPrev3h: row.items_prev_3h,
+      items12h: row.items_12h,
+      weightedDistinctSources,
+      sourceQualityScore,
+      xSignalScore,
+      hnSignalScore,
+      burstVelocity,
+      recencyScore,
+      breakingRecencyScore,
+      crossPlatformScore,
+      ...display,
+    };
+  });
+
+  const consensusSourceMax = Math.max(
+    ...normalizedRows.map((row) => row.weightedDistinctSources),
+    1,
+  );
+  const consensusItemMax = Math.max(...normalizedRows.map((row) => row.items_window), 1);
+  const burstMax = Math.max(...normalizedRows.map((row) => row.burstVelocity), 1);
+  const xMax = Math.max(...normalizedRows.map((row) => row.xSignalScore), 1);
+  const hnMax = Math.max(...normalizedRows.map((row) => row.hnSignalScore), 1);
+
+  const consensusWeights = {
+    sources: safeEnvWeight("HOTSPOT_CONSENSUS_W_SOURCES", 0.42),
+    items: safeEnvWeight("HOTSPOT_CONSENSUS_W_ITEMS", 0.18),
+    recency: safeEnvWeight("HOTSPOT_CONSENSUS_W_RECENCY", 0.16),
+    cohesion: safeEnvWeight("HOTSPOT_CONSENSUS_W_COHESION", 0.08),
+    crossPlatform: safeEnvWeight("HOTSPOT_CONSENSUS_W_CROSS_PLATFORM", 0.16),
+  };
+  const breakingWeights = {
+    velocity: safeEnvWeight("HOTSPOT_BREAKING_W_VELOCITY", 0.34),
+    sourceQuality: safeEnvWeight("HOTSPOT_BREAKING_W_SOURCE_QUALITY", 0.18),
+    x: safeEnvWeight("HOTSPOT_BREAKING_W_X", 0.2),
+    hn: safeEnvWeight("HOTSPOT_BREAKING_W_HN", 0.1),
+    recency: safeEnvWeight("HOTSPOT_BREAKING_W_RECENCY", 0.1),
+    crossPlatform: safeEnvWeight("HOTSPOT_BREAKING_W_CROSS_PLATFORM", 0.08),
+  };
+
+  const scoredRows = normalizedRows.map((row) => {
+    const consensusScore =
+      consensusWeights.sources * normalizeScore(row.weightedDistinctSources, consensusSourceMax) +
+      consensusWeights.items * normalizeScore(row.items_window, consensusItemMax) +
+      consensusWeights.recency * row.recencyScore +
+      consensusWeights.cohesion * (row.cohesion_score ?? 0.5) +
+      consensusWeights.crossPlatform * row.crossPlatformScore;
+    const breakingScore =
+      breakingWeights.velocity * normalizeScore(row.burstVelocity, burstMax) +
+      breakingWeights.sourceQuality * row.sourceQualityScore +
+      breakingWeights.x * normalizeScore(row.xSignalScore, xMax) +
+      breakingWeights.hn * normalizeScore(row.hnSignalScore, hnMax) +
+      breakingWeights.recency * row.breakingRecencyScore +
+      breakingWeights.crossPlatform * row.crossPlatformScore;
+    return {
+      ...row,
+      consensusScore,
+      breakingScore,
+      attentionScore: Math.max(consensusScore, breakingScore),
+      displayTitle: row.displayTitle,
+      topicState: row.topicState,
+      nameConfidence: row.nameConfidence,
+      keywordConsistency:
+        row.items_window > 0 ? Number((row.distinct_sources / row.items_window).toFixed(4)) : 0,
+      whyConsensus: [
+        `${row.distinct_sources} distinct source${row.distinct_sources === 1 ? "" : "s"}`,
+        `${row.weightedDistinctSources.toFixed(2)} weighted source coverage`,
+        `${row.items_window} item${row.items_window === 1 ? "" : "s"} in window`,
+        `cross-platform score: ${row.crossPlatformScore.toFixed(2)}`,
+      ],
+      whyBreaking: [
+        `burst velocity: ${row.burstVelocity.toFixed(2)}`,
+        `source quality: ${row.sourceQualityScore.toFixed(2)}`,
+        `X signal: ${row.xSignalScore.toFixed(2)}`,
+        `HN signal: ${row.hnSignalScore.toFixed(2)}`,
+      ],
+      whyAttention: [
+        `keyword consistency: ${row.items_window > 0 ? (row.distinct_sources / row.items_window).toFixed(2) : "0.00"}`,
+        `weighted sources: ${row.weightedDistinctSources.toFixed(2)}`,
+        `attention score: ${Math.max(consensusScore, breakingScore).toFixed(2)}`,
+      ],
+      whySelected: [
+        `window: ${range}`,
+        `title state: ${row.topicState}`,
+        `display title: ${row.displayTitle}`,
+      ],
+      selectionWindow: range,
+    };
+  });
+
+  const consensusClusters = scoredRows
+    .filter((row) => row.distinct_sources >= consensusMinSources)
+    .sort((a, b) => {
+      if (b.consensusScore !== a.consensusScore) return b.consensusScore - a.consensusScore;
+      if (b.distinct_sources !== a.distinct_sources) return b.distinct_sources - a.distinct_sources;
+      if (b.items_window !== a.items_window) return b.items_window - a.items_window;
+      return (b.recencyScore ?? 0) - (a.recencyScore ?? 0);
+    })
+    .slice(0, topN)
+    .map((row) => ({
+      ...row,
+      distinctSources: row.distinctSources ?? row.distinct_sources,
+      distinctPlatforms: row.distinctPlatforms ?? row.distinct_platforms,
+      itemCount: row.itemCount ?? row.item_count,
+      lastSeenAt: row.lastSeenAt ?? row.last_seen_at,
+      sourceNames: row.sourceNames ?? row.source_names ?? "",
+      itemsWindow: row.itemsWindow ?? row.items_window,
+      latestItemAt: row.latestItemAt ?? row.latest_item_at,
+      cohesionScore: row.cohesionScore ?? row.cohesion_score,
+      consensusScore: Number(row.consensusScore.toFixed(4)),
+      breakingScore: Number(row.breakingScore.toFixed(4)),
+      attentionScore: Number(row.attentionScore.toFixed(4)),
+      keywordConsistency: row.keywordConsistency,
+      whyAttention: row.whyAttention,
+    }));
+
+  const breakingClusters = scoredRows
+    .filter((row) => row.distinct_sources >= breakingMinSources)
+    .sort((a, b) => {
+      if (b.breakingScore !== a.breakingScore) return b.breakingScore - a.breakingScore;
+      if (b.burstVelocity !== a.burstVelocity) return b.burstVelocity - a.burstVelocity;
+      if (b.sourceQualityScore !== a.sourceQualityScore) return b.sourceQualityScore - a.sourceQualityScore;
+      return (b.breakingRecencyScore ?? 0) - (a.breakingRecencyScore ?? 0);
+    })
+    .slice(0, topN)
+    .map((row) => ({
+      ...row,
+      distinctSources: row.distinctSources ?? row.distinct_sources,
+      distinctPlatforms: row.distinctPlatforms ?? row.distinct_platforms,
+      itemCount: row.itemCount ?? row.item_count,
+      lastSeenAt: row.lastSeenAt ?? row.last_seen_at,
+      sourceNames: row.sourceNames ?? row.source_names ?? "",
+      itemsWindow: row.itemsWindow ?? row.items_window,
+      latestItemAt: row.latestItemAt ?? row.latest_item_at,
+      cohesionScore: row.cohesionScore ?? row.cohesion_score,
+      consensusScore: Number(row.consensusScore.toFixed(4)),
+      breakingScore: Number(row.breakingScore.toFixed(4)),
+      attentionScore: Number(row.attentionScore.toFixed(4)),
+      keywordConsistency: row.keywordConsistency,
+      whyAttention: row.whyAttention,
+    }));
+
+  return {
+    ...overview,
+    consensusClusters,
+    breakingClusters,
+    topicGroups: consensusClusters,
+    topClusters: consensusClusters,
+    hotspot: {
+      ...overview.hotspot,
+      hotspotIndex: Number(consensusClusters.reduce((acc, row) => acc + row.consensusScore, 0).toFixed(4)),
+      attentionIndex: Number(consensusClusters.reduce((acc, row) => acc + row.attentionScore, 0).toFixed(4)),
+      consensusHotspotIndex: Number(consensusClusters.reduce((acc, row) => acc + row.consensusScore, 0).toFixed(4)),
+      breakingHotspotIndex: Number(breakingClusters.reduce((acc, row) => acc + row.breakingScore, 0).toFixed(4)),
+      consensusWeights,
+      breakingWeights,
     },
   };
 }
@@ -1709,3 +2910,9 @@ export async function runRetention(days = 90) {
     deletedClusters: deleted_clusters ?? 0,
   };
 }
+
+
+
+
+
+

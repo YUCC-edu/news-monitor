@@ -5,7 +5,7 @@ import { hnConnector } from "@news/connectors-hn";
 import { rssConnector } from "@news/connectors-rss";
 import { xRsshubConnector } from "@news/connectors-x-rsshub";
 import { wechatWeweConnector } from "@news/connectors-wechat-wewe";
-import { categorizeErrorMessage, classifyRemediation, createLogger } from "@news/shared";
+import { aiMode, categorizeErrorMessage, classifyRemediation, createLogger } from "@news/shared";
 import { handleFetchSource } from "./jobs/fetch-source";
 import { handleEnrichItem } from "./jobs/enrich-item";
 import { handleNameCluster } from "./jobs/name-cluster";
@@ -147,6 +147,7 @@ function logJobFailure(queueName: string, job: { id?: string; name?: string; dat
 
 async function main() {
   log.info("worker booting", {
+    aiMode: aiMode(),
     fetchConcurrency: 8,
     enrichConcurrency: 4,
     nameClusterConcurrency: 2,

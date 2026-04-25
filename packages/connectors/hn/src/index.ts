@@ -2,6 +2,7 @@ import type {
   Connector,
   ConnectorFetchResult,
   FetchContext,
+  HnEngagementMetrics,
   NormalizedItem,
 } from "@news/connectors-core";
 
@@ -22,6 +23,7 @@ type HnHit = {
   comment_text?: string | null;
   created_at?: string | null;
   points?: number | null;
+  num_comments?: number | null;
 };
 
 type HnResponse = {
@@ -71,6 +73,14 @@ function toNormalized(hit: HnHit): NormalizedItem | null {
   const externalId = hit.objectID;
   if (!externalId) return null;
   const publishedAt = hit.created_at ? new Date(hit.created_at) : undefined;
+  const engagement: HnEngagementMetrics = {
+    posts: 1,
+    points: typeof hit.points === "number" ? hit.points : undefined,
+    comments: typeof hit.num_comments === "number" ? hit.num_comments : undefined,
+  };
+  const hasEngagement = Object.entries(engagement).some(
+    ([key, value]) => key !== "posts" && typeof value === "number" && value >= 0,
+  );
   return {
     externalId,
     url: hit.url ?? undefined,
@@ -79,6 +89,7 @@ function toNormalized(hit: HnHit): NormalizedItem | null {
     contentText: hit.story_text ?? hit.comment_text ?? undefined,
     publishedAt:
       publishedAt && !Number.isNaN(publishedAt.getTime()) ? publishedAt : undefined,
+    engagement: hasEngagement ? { hn: engagement } : undefined,
     raw: hit,
   };
 }

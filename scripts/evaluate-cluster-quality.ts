@@ -24,6 +24,9 @@ async function main() {
       avg_sources_per_cluster: number;
       avg_items_per_cluster: number;
       named_cluster_ratio: number;
+      split_risk_rate: number;
+      multi_source_rate: number;
+      single_source_rate: number;
     }[]>`
       WITH base AS (
         SELECT
@@ -45,9 +48,21 @@ async function main() {
         COALESCE(AVG(source_count), 0)::float AS avg_sources_per_cluster,
         COALESCE(AVG(items_count), 0)::float AS avg_items_per_cluster,
         COALESCE(
-          AVG(CASE WHEN topic IS NOT NULL AND btrim(topic) <> '' AND topic <> '事件聚合' THEN 1 ELSE 0 END),
+          AVG(CASE WHEN topic IS NOT NULL AND btrim(topic) <> '' AND topic <> '浜嬩欢鑱氬悎' THEN 1 ELSE 0 END),
           0
-        )::float AS named_cluster_ratio
+        )::float AS named_cluster_ratio,
+        COALESCE(
+          COUNT(*) FILTER (WHERE source_count = 1 AND items_count >= 3)::float / NULLIF(COUNT(*)::float, 0),
+          0
+        )::float AS split_risk_rate,
+        COALESCE(
+          COUNT(*) FILTER (WHERE source_count >= 2)::float / NULLIF(COUNT(*)::float, 0),
+          0
+        )::float AS multi_source_rate,
+        COALESCE(
+          COUNT(*) FILTER (WHERE source_count = 1)::float / NULLIF(COUNT(*)::float, 0),
+          0
+        )::float AS single_source_rate
       FROM base
     `;
 
@@ -90,7 +105,19 @@ async function main() {
           windowDays: days,
           clusterQuality: summary ?? null,
           splitRiskClusters: topSplitCandidates?.cnt ?? 0,
+          splitRiskRate:
+            summary && summary.clusters_total > 0
+              ? Number((summary.split_risk_rate ?? 0).toFixed(4))
+              : 0,
           taxonomyCoverage,
+          qualityGate: summary
+            ? {
+                multiSourceRate: Number((summary.multi_source_rate ?? 0).toFixed(4)),
+                singleSourceRate: Number((summary.single_source_rate ?? 0).toFixed(4)),
+                averageSourcesPerCluster: Number((summary.avg_sources_per_cluster ?? 0).toFixed(2)),
+                averageItemsPerCluster: Number((summary.avg_items_per_cluster ?? 0).toFixed(2)),
+              }
+            : null,
         },
         null,
         2,

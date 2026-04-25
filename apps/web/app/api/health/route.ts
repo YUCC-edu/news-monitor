@@ -1,21 +1,19 @@
-import { listSourceHealth } from "@news/db";
+import { executeCapability } from "@news/engine";
 import { NextResponse } from "next/server";
-import { categorizeErrorMessage, classifyRemediation, createLogger } from "@news/shared";
+import { createLogger } from "@news/shared";
 
 const log = createLogger("api:health");
 
 export async function GET() {
   const t0 = Date.now();
-  const rows = await listSourceHealth();
-  const enriched = rows.map((row) => {
-    const errorCategory = categorizeErrorMessage(row.lastError);
-    const remediation = classifyRemediation(errorCategory);
-    const recoveredAgoMin =
-      row.lastOkAt && row.failCount === 0
-        ? Math.max(0, Math.round((Date.now() - new Date(row.lastOkAt).getTime()) / 60000))
-        : null;
-    return { ...row, errorCategory, remediation, recoveredAgoMin };
-  });
+  const result = await executeCapability("health.sources", {});
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 500 });
+  }
+  const data = result.data as {
+    sources: Array<{ errorCategory: string } & Record<string, unknown>>;
+  };
+  const enriched = data.sources;
   const categoryCounts = enriched.reduce<Record<string, number>>((acc, row) => {
     const k = row.errorCategory;
     acc[k] = (acc[k] ?? 0) + 1;

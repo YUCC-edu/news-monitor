@@ -59,4 +59,36 @@ describe("hnConnector", () => {
     expect(calledUrl).toContain("query=agent");
     expect(calledUrl).toContain("numericFilters=points%3E%3D100%2Ccreated_at_i%3E");
   });
+
+  it("extracts points and comments into structured HN engagement", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        hits: [
+          {
+            objectID: "456",
+            title: "Hot AI release",
+            author: "hn-user",
+            url: "https://example.com/hot",
+            created_at: "2026-04-17T11:00:00.000Z",
+            points: 512,
+            num_comments: 83,
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { items } = await hnConnector.fetch({
+      source: { id: "s1", config: {} },
+      now: new Date("2026-04-17T11:10:00.000Z"),
+      signal: new AbortController().signal,
+    });
+
+    expect(items[0].engagement?.hn).toEqual({
+      posts: 1,
+      points: 512,
+      comments: 83,
+    });
+  });
 });

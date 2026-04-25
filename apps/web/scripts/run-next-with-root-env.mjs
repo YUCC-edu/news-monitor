@@ -49,7 +49,13 @@ function runNext() {
   mergeRootEnv();
 
   const nextBin = path.resolve(webDir, "node_modules", "next", "dist", "bin", "next");
-  const args = cmd === "dev" ? [cmd, "-p", "3000", ...rest] : cmd === "start" ? [cmd, "-p", "3000", ...rest] : [cmd, ...rest];
+  const host = process.env.ALLOW_LAN === "1" ? "0.0.0.0" : "127.0.0.1";
+  const args =
+    cmd === "dev"
+      ? [cmd, "-H", host, "-p", "3000", ...rest]
+      : cmd === "start"
+        ? [cmd, "-H", host, "-p", "3000", ...rest]
+        : [cmd, ...rest];
   const child = spawn(process.execPath, [nextBin, ...args], {
     cwd: webDir,
     stdio: "inherit",

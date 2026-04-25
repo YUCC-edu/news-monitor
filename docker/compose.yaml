@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: news
       POSTGRES_DB: news
     ports:
-      - "55432:5432"
+      - "127.0.0.1:55432:5432"
     volumes:
       - ./.data/pg:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +20,7 @@ services:
     image: redis:7
     container_name: news-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./.data/redis:/data
     healthcheck:
@@ -33,7 +33,7 @@ services:
     image: diygod/rsshub:latest
     container_name: news-rsshub
     ports:
-      - "1200:1200"
+      - "127.0.0.1:1200:1200"
     environment:
       NODE_ENV: production
       TWITTER_AUTH_TOKEN: ${TWITTER_AUTH_TOKEN:-}
@@ -44,12 +44,31 @@ services:
     image: cooderl/wewe-rss-sqlite:latest
     container_name: news-wewe-rss
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     environment:
       AUTH_CODE: ${WEWE_RSS_AUTH_CODE:-change-me}
       DATABASE_URL: "file:/app/data/db.sqlite"
     volumes:
       - ./.data/wewe:/app/data
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    container_name: news-migrate
+    env_file:
+      - path: ../.env
+        format: raw
+    environment:
+      DATABASE_URL: postgres://news:news@postgres:5432/news
+      REDIS_URL: redis://redis:6379
+      RSSHUB_BASE: http://rsshub:1200
+      WEWE_RSS_BASE: http://wewe-rss:4000
+    command: ["./node_modules/.bin/tsx", "packages/db/src/migrate.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   web:
     build:
@@ -57,17 +76,68 @@ services:
       dockerfile: docker/web.Dockerfile
     container_name: news-web
     env_file:
-      - ../.env
+      - path: ../.env
+        format: raw
     environment:
       DATABASE_URL: postgres://news:news@postgres:5432/news
       REDIS_URL: redis://redis:6379
       RSSHUB_BASE: http://rsshub:1200
+      WEWE_RSS_BASE: http://wewe-rss:4000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rsshub:
+        condition: service_started
+      wewe-rss:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
-  # worker 在 M1 加入
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    container_name: news-worker
+    env_file:
+      - path: ../.env
+        format: raw
+    environment:
+      DATABASE_URL: postgres://news:news@postgres:5432/news
+      REDIS_URL: redis://redis:6379
+      RSSHUB_BASE: http://rsshub:1200
+      WEWE_RSS_BASE: http://wewe-rss:4000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rsshub:
+        condition: service_started
+      wewe-rss:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const Redis = require('ioredis'); const redis = new Redis(process.env.REDIS_URL); redis.ping().then(() => { redis.disconnect(); process.exit(0); }).catch(() => process.exit(1))\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped

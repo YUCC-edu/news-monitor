@@ -318,7 +318,7 @@ export default function CreatorsPage() {
             {addKind === "x-rsshub" ? (
               <>
                 <label className="nm-label">
-                  Handle
+                账号
                   <Input
                     value={handle}
                     onChange={(e) => setHandle(e.target.value)}
@@ -338,7 +338,7 @@ export default function CreatorsPage() {
             ) : (
               <>
                 <label className="nm-label">
-                  Feed URL
+                  订阅地址
                   <Input
                     value={weweFeedUrl}
                     onChange={(e) => setWeweFeedUrl(e.target.value)}

@@ -100,7 +100,7 @@ export default function HealthPage() {
           ? "—"
           : Object.entries(
               rows.reduce<Record<string, number>>((acc, row) => {
-                const k = row.errorCategory ?? "unknown";
+                const k = row.errorCategory ?? "未知";
                 acc[k] = (acc[k] ?? 0) + 1;
                 return acc;
               }, {}),
@@ -185,7 +185,7 @@ export default function HealthPage() {
                   <td style={thtdStyle}>{fmt(row.lastOkAt)}</td>
                   <td style={thtdStyle}>{fmtRate(row.pipeline24hRate)}</td>
                   <td style={thtdStyle}>{row.failCount}</td>
-                  <td style={thtdStyle}>{row.errorCategory ?? "unknown"}</td>
+                  <td style={thtdStyle}>{row.errorCategory ?? "未知"}</td>
                   <td style={thtdStyle}>{row.remediation ?? "—"}</td>
                   <td style={thtdStyle}>{fmtRecovery(row.recoveredAgoMin)}</td>
                   <td style={thtdStyle}>{row.lastError ? row.lastError.slice(0, 80) : "-"}</td>

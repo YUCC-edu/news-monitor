@@ -1,13 +1,32 @@
+param(
+  [switch]$StopOnly,
+  [switch]$StartOnly
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$webWindowTag = "news-monitor:web-shell"
+$workerWindowTag = "news-monitor:worker-shell"
+
+if ($StopOnly -and $StartOnly) {
+  throw "StopOnly and StartOnly cannot be used together."
+}
 
 function Stop-DevProcesses {
   $patterns = @(
+    [regex]::Escape($webWindowTag),
+    [regex]::Escape($workerWindowTag),
+    "corepack\s+pnpm\s+dev:web",
+    "corepack\s+pnpm\s+dev:worker",
     "pnpm\s+dev:web",
     "pnpm\s+--filter\s+@news/web\s+dev",
     "pnpm\s+dev:worker",
-    "pnpm\s+--filter\s+@news/worker\s+dev"
+    "pnpm\s+--filter\s+@news/worker\s+dev",
+    "scripts/run-next-with-root-env\.mjs\s+dev",
+    "next\s+dev\s+-H\s+127\.0\.0\.1\s+-p\s+3000",
+    "tsx.*src/index\.ts",
+    "src/index\.ts"
   )
 
   $targets = Get-CimInstance Win32_Process | Where-Object {
@@ -40,14 +59,24 @@ function Stop-DevProcesses {
 }
 
 function Start-DevProcess([string]$name, [string]$command) {
-  $arg = "-NoExit -Command `"Set-Location '$repoRoot'; $command`""
+  $windowTag = if ($name -eq "web") { $webWindowTag } else { $workerWindowTag }
+  $scriptBlock = "& { `$host.UI.RawUI.WindowTitle = '$windowTag'; Set-Location '$repoRoot'; $command }"
+  $arg = "-NoLogo -NoExit -Command `"$scriptBlock`""
   Start-Process powershell -ArgumentList $arg | Out-Null
   Write-Host "Started $name"
 }
 
 Set-Location $repoRoot
-Stop-DevProcesses
-Start-Sleep -Seconds 1
-Start-DevProcess -name "web" -command "pnpm dev:web"
-Start-DevProcess -name "worker" -command "pnpm dev:worker"
-Write-Host "Restart completed."
+
+if (-not $StartOnly) {
+  Stop-DevProcesses
+}
+
+if (-not $StopOnly) {
+  Start-Sleep -Seconds 1
+  Start-DevProcess -name "web" -command "corepack pnpm dev:web"
+  Start-DevProcess -name "worker" -command "corepack pnpm dev:worker"
+  Write-Host "Web and worker started."
+} else {
+  Write-Host "Web and worker stopped."
+}

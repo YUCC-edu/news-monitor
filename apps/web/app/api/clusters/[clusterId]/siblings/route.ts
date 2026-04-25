@@ -1,4 +1,4 @@
-import { listClusterSiblingItems } from "@news/db";
+import { executeCapability } from "@news/engine";
 import { NextResponse } from "next/server";
 
 const uuidRe =
@@ -14,6 +14,8 @@ export async function GET(request: Request, { params }: Params) {
   const url = new URL(request.url);
   const exclude = url.searchParams.get("exclude") ?? undefined;
   const excludeSource = url.searchParams.get("excludeSource") ?? undefined;
+  const audienceRaw = url.searchParams.get("audience");
+  const audience = audienceRaw === "personal" ? "personal" : "public";
   if (exclude && !uuidRe.test(exclude)) {
     return NextResponse.json({ error: "invalid exclude item id" }, { status: 400 });
   }
@@ -24,11 +26,16 @@ export async function GET(request: Request, { params }: Params) {
   const limitParsed = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
   const limit =
     limitParsed != null && Number.isFinite(limitParsed) ? limitParsed : undefined;
-  const rows = await listClusterSiblingItems({
+  const result = await executeCapability("clusters.siblings", {
     clusterId,
     excludeItemId: exclude,
     excludeSourceId: excludeSource,
     limit,
+    audience,
   });
-  return NextResponse.json(rows);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error.message, code: result.error.code }, { status: 400 });
+  }
+  const data = result.data as { items: unknown[] };
+  return NextResponse.json(data.items);
 }

@@ -1,4 +1,4 @@
-import { upsertSource } from "@news/db";
+﻿import { upsertSource } from "@news/db";
 import { createLogger } from "@news/shared";
 import Redis from "ioredis";
 import { NextResponse } from "next/server";
@@ -7,6 +7,12 @@ import { collectPresetItems, listPresetPacks } from "@/lib/source-presets";
 
 let publishRedis: Redis | null = null;
 const log = createLogger("api:sources:import-presets");
+
+function getHomepageUrl(item: unknown) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+  const homepageUrl = (item as Record<string, unknown>).homepageUrl;
+  return typeof homepageUrl === "string" && homepageUrl.trim() ? homepageUrl.trim() : undefined;
+}
 
 function getPublishRedis() {
   if (!publishRedis) {
@@ -31,10 +37,11 @@ export async function POST(request: Request) {
           description?: string;
           kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
           config: Record<string, unknown>;
+          homepageUrl?: string;
           fetchIntervalSec: number;
           initialFetchDays?: number | null;
           maxItemAgeDays?: number | null;
-          category: "hotspot" | "research" | "nursing" | "evidence" | "policy";
+          category: "hotspot" | "research";
           tags?: string[];
           priority?: number;
         }>;
@@ -61,7 +68,8 @@ export async function POST(request: Request) {
       const out = await upsertSource({
         kind: item.kind,
         name: item.name,
-        config: item.config,
+        scope: "public_seed",
+        config: getHomepageUrl(item) ? { ...item.config, homepageUrl: getHomepageUrl(item) } : item.config,
         enabled,
         fetchIntervalSec: item.fetchIntervalSec,
         initialFetchDays: item.initialFetchDays ?? null,
@@ -136,3 +144,4 @@ export async function GET() {
   }));
   return NextResponse.json({ packs });
 }
+

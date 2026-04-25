@@ -1,10 +1,21 @@
-import { listItemIdsForReEnrich, type ReEnrichScope } from "@news/db";
 import { NextResponse } from "next/server";
-import { enqueueEnrichItems } from "@/lib/enrich-item-queue";
+import { checkAssistantWritePermission, resolveAssistantActor } from "@/lib/assistant-auth";
+import { makeRequestId, toolError, toolOk } from "@/lib/assistant-contract";
+import { runAssistantTool } from "@/lib/assistant-tools";
 
 export async function POST(request: Request) {
+  const requestId = request.headers.get("x-request-id") ?? makeRequestId();
+  const startedAt = Date.now();
+  const actor = resolveAssistantActor(request);
+  const gate = checkAssistantWritePermission(request);
+  if (!gate.allowed) {
+    return NextResponse.json(toolError("trigger_reenrich", requestId, startedAt, gate.reason ?? "forbidden"), {
+      status: 403,
+    });
+  }
+
   const body = (await request.json()) as {
-    scope?: ReEnrichScope;
+    scope?: "source" | "window" | "item";
     sourceId?: string;
     since?: string;
     until?: string;
@@ -13,19 +24,24 @@ export async function POST(request: Request) {
   };
   const scope = body.scope;
   if (scope !== "source" && scope !== "window" && scope !== "item") {
-    return NextResponse.json({ error: "scope must be source | window | item" }, { status: 400 });
+    return NextResponse.json(
+      toolError("trigger_reenrich", requestId, startedAt, "scope must be source | window | item"),
+      { status: 400 },
+    );
   }
-  const ids = await listItemIdsForReEnrich({
-    scope,
-    sourceId: body.sourceId,
-    itemId: body.itemId,
-    since: body.since ? new Date(body.since) : undefined,
-    until: body.until ? new Date(body.until) : undefined,
-    limit: Math.min(Math.max(Number(body.limit) || 100, 1), 500),
-  });
-  if (ids.length === 0) {
-    return NextResponse.json({ tool: "trigger_reenrich", ok: true, queued: 0, itemIds: [] });
+  try {
+    const data = await runAssistantTool({
+      requestId,
+      actor: actor.actor,
+      role: "assistant_write_low",
+      tool: "trigger_reenrich",
+      args: body as Record<string, unknown>,
+    });
+    return NextResponse.json(toolOk("trigger_reenrich", requestId, startedAt, data));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(toolError("trigger_reenrich", requestId, startedAt, message), {
+      status: 400,
+    });
   }
-  await enqueueEnrichItems(ids);
-  return NextResponse.json({ tool: "trigger_reenrich", ok: true, queued: ids.length, itemIds: ids });
 }

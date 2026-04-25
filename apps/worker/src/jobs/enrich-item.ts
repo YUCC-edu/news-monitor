@@ -1,11 +1,12 @@
 import type { Job } from "bullmq";
 import { embedText, translateAndTag } from "@news/ai";
-import { createLogger } from "@news/shared";
+import { aiMode, createLogger } from "@news/shared";
 import {
   getClusterById,
   getClusterDistinctSourceCount,
   getItemById,
   updateClusterCentroidAfterItemEnriched,
+  updateClusterHotspotStats,
   upsertItemEnrichment,
 } from "@news/db";
 import { publish } from "../ipc/publish";
@@ -14,6 +15,14 @@ import { assignClusterForEmbedding } from "../pipeline/cluster";
 type EnrichItemJobData = {
   itemId: string;
 };
+
+function extractPlatformMetrics(raw: unknown) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const metrics = (raw as Record<string, unknown>)._normalizedEngagement;
+  return metrics && typeof metrics === "object" && !Array.isArray(metrics)
+    ? (metrics as Record<string, unknown>)
+    : {};
+}
 
 const log = createLogger("worker:enrich-item");
 
@@ -48,10 +57,14 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
     categoryTopic: output.categoryTopic,
     categoryEntity: output.categoryEntity,
     embedding,
+    enrichmentSource: aiMode() === "llm" ? "llm" : "rules",
+    enrichmentVersion: aiMode() === "llm" ? "llm-v1" : "rules-v1",
+    platformMetrics: extractPlatformMetrics(item.raw),
     clusterId: cluster.clusterId,
   });
 
   await updateClusterCentroidAfterItemEnriched(cluster.clusterId, embedding);
+  await updateClusterHotspotStats(cluster.clusterId);
   itemLog.info("enrich completed", {
     lang: output.lang,
     tagsCount: output.tags.length,

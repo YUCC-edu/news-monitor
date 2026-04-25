@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SearchGroupType } from "@/lib/global-search";
 
 type SearchResult = {
@@ -76,14 +76,14 @@ export function CommandPalette({ open, initialQuery = "", onClose }: CommandPale
     [groups],
   );
 
-  const openHref = (href: string) => {
+  const openHref = useCallback((href: string) => {
     onClose();
     if (href.startsWith("http://") || href.startsWith("https://")) {
       window.open(href, "_blank", "noopener,noreferrer");
       return;
     }
     router.push(href);
-  };
+  }, [onClose, router]);
 
   useEffect(() => {
     if (!open) return;
@@ -107,7 +107,7 @@ export function CommandPalette({ open, initialQuery = "", onClose }: CommandPale
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeIndex, flatResults, onClose, open, router]);
+  }, [activeIndex, flatResults, onClose, open, openHref]);
 
   if (!open) return null;
 

@@ -1,5 +1,6 @@
 import {
   CONTROLLED_TAGS,
+  aiMode,
   deriveTaxonomyWithMeta,
   detectLangSimple,
   isControlledTag,
@@ -63,13 +64,17 @@ function clampTags(tags: string[]) {
 
 export async function translateAndTag(
   input: TranslateTagInput,
-  client: LlmClient = getLlmClient(),
+  client?: LlmClient,
 ): Promise<TranslateTagOutput> {
   const title = input.title?.trim() ?? "";
   const content = input.contentText?.trim() ?? "";
   const merged = `${title}\n${content}`.trim();
   const lang = detectLangSimple(merged);
   const bounded = content.slice(0, 600);
+  const mode = aiMode();
+  if (!client && mode !== "llm") {
+    return buildFallbackOutput({ title, content, lang });
+  }
 
   const system = [
     "You are an AI news enrichment assistant.",
@@ -89,15 +94,24 @@ export async function translateAndTag(
     2,
   );
 
-  const raw = await client.chatJson({ system, user });
-  const parsedJson = JSON.parse(raw) as Record<string, unknown>;
-  const parsed = OutputSchema.parse({
-    ...parsedJson,
-    tags: normalizeStringArray(parsedJson.tags),
-    category_domain: normalizeStringArray(parsedJson.category_domain),
-    category_topic: normalizeStringArray(parsedJson.category_topic),
-    category_entity: normalizeStringArray(parsedJson.category_entity),
-  });
+  let parsed: z.infer<typeof OutputSchema>;
+  try {
+    const raw = await (client ?? getLlmClient()).chatJson({ system, user });
+    const parsedJson = JSON.parse(raw) as Record<string, unknown>;
+    parsed = OutputSchema.parse({
+      ...parsedJson,
+      tags: normalizeStringArray(parsedJson.tags),
+      category_domain: normalizeStringArray(parsedJson.category_domain),
+      category_topic: normalizeStringArray(parsedJson.category_topic),
+      category_entity: normalizeStringArray(parsedJson.category_entity),
+    });
+  } catch (err) {
+    console.warn(
+      "[translateAndTag] LLM enrichment failed; using rule-based fallback",
+      err instanceof Error ? err.message : err,
+    );
+    return buildFallbackOutput({ title, content, lang });
+  }
   const categories = deriveTaxonomyWithMeta({
     title: title,
     content: content,
@@ -122,6 +136,29 @@ export async function translateAndTag(
     categoryDomain: domain,
     categoryTopic: topic,
     categoryEntity: entity,
+    categoryMeta: {
+      confidence: categories.confidence,
+      source: categories.source,
+    },
+  };
+}
+
+function buildFallbackOutput(input: {
+  title: string;
+  content: string;
+  lang: "zh" | "en";
+}): TranslateTagOutput {
+  const categories = deriveTaxonomyWithMeta({
+    title: input.title,
+    content: input.content,
+    tags: [],
+  });
+  return {
+    lang: input.lang,
+    tags: [],
+    categoryDomain: categories.domain,
+    categoryTopic: categories.topic,
+    categoryEntity: categories.entity,
     categoryMeta: {
       confidence: categories.confidence,
       source: categories.source,
