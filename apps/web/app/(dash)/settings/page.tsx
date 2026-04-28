@@ -156,6 +156,10 @@ export default function SettingsPage() {
       .map(([name, v]) => ({ name, row: v! }))
       .slice(0, 4);
   }, [system]);
+  const llmMissingBaseUrl = form.AI_MODE === "llm" && !form.LLM_BASE_URL.trim();
+  const llmMissingApiKey =
+    form.AI_MODE === "llm" && !form.LLM_API_KEY.trim() && (!llmApiKeySet || form.clearLlmApiKey);
+  const llmModeChanged = system?.env.llm.mode !== form.AI_MODE;
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -232,9 +236,9 @@ export default function SettingsPage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error ?? `保存失败（${resp.status}）`);
       setVersion(data.version);
-      setSaved("已保存到根目录 .env。请重启 web/worker 使新配置生效。");
+      setSaved(`已保存到根目录 .env：AI_MODE=${form.AI_MODE}。请重启 web/worker 使新配置生效。`);
       setForm((old) => ({ ...old, LLM_API_KEY: "", clearLlmApiKey: false }));
-      setLlmApiKeySet(!form.clearLlmApiKey || !!form.LLM_API_KEY.trim());
+      setLlmApiKeySet(form.clearLlmApiKey ? !!form.LLM_API_KEY.trim() : llmApiKeySet || !!form.LLM_API_KEY.trim());
       await loadSystem();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
@@ -356,6 +360,25 @@ export default function SettingsPage() {
                   <option value="llm">llm - use configured LLM</option>
                   <option value="agent">agent - external Agent handles AI</option>
                 </select>
+                {form.AI_MODE === "llm" ? (
+                  <div style={llmMissingBaseUrl || llmMissingApiKey ? warningText : helpText}>
+                    已选择 LLM 模式。保存后会写入 .env，必须重启 web/worker 后才会真正生效。
+                    {llmMissingBaseUrl || llmMissingApiKey ? (
+                      <>
+                        {" "}缺少：
+                        {[llmMissingBaseUrl ? "LLM_BASE_URL" : "", llmMissingApiKey ? "LLM_API_KEY" : ""]
+                          .filter(Boolean)
+                          .join("、")}
+                        。
+                      </>
+                    ) : null}
+                  </div>
+                ) : form.AI_MODE === "agent" ? (
+                  <div style={helpText}>Agent 模式只保留配置语义。本轮不会启用 Agent 接管发现链路。</div>
+                ) : (
+                  <div style={helpText}>Core 模式不需要 LLM Key，抓取、关键词、聚类和排序会正常运行。</div>
+                )}
+                {llmModeChanged ? <div style={helpText}>当前运行中的模式仍是 {system?.env.llm.mode ?? "unknown"}。</div> : null}
               </label>
               <Field label="LLM_BASE_URL" value={form.LLM_BASE_URL} onChange={(v) => update("LLM_BASE_URL", v)} />
               <Field label="LLM_CHAT_MODEL" value={form.LLM_CHAT_MODEL} onChange={(v) => update("LLM_CHAT_MODEL", v)} />
@@ -569,6 +592,8 @@ const gridStyle: CSSProperties = {
 };
 const field: CSSProperties = { display: "grid", gap: 4 };
 const fieldLabel: CSSProperties = { color: "var(--fg-2)", fontSize: 12 };
+const helpText: CSSProperties = { color: "var(--fg-2)", fontSize: 12, lineHeight: 1.45 };
+const warningText: CSSProperties = { color: "#ffbe7a", fontSize: 12, lineHeight: 1.45 };
 const fieldInput: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 6,

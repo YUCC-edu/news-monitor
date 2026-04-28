@@ -50,7 +50,7 @@ export type CapabilityFailure = {
   error: CapabilityErrorPayload;
 };
 
-export const sourceKindSchema = z.enum(["rss", "hn", "x-rsshub", "wechat-wewe"]);
+export const sourceKindSchema = z.enum(["rss", "hn", "x-rsshub", "x-rsshub-search", "wechat-wewe"]);
 export const audienceSchema = z.enum(["public", "personal"]).default("public");
 export const rangeSchema = z.enum(["24h", "72h", "7d", "30d", "90d"]).default("7d");
 export const statsRangeSchema = z.enum(["24h", "72h", "7d", "30d", "90d", "custom"]).default("7d");

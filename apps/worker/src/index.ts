@@ -3,13 +3,14 @@ import Redis from "ioredis";
 import { register } from "@news/connectors-core";
 import { hnConnector } from "@news/connectors-hn";
 import { rssConnector } from "@news/connectors-rss";
-import { xRsshubConnector } from "@news/connectors-x-rsshub";
+import { xRsshubConnector, xRsshubSearchConnector } from "@news/connectors-x-rsshub";
 import { wechatWeweConnector } from "@news/connectors-wechat-wewe";
 import { aiMode, categorizeErrorMessage, classifyRemediation, createLogger } from "@news/shared";
 import { handleFetchSource } from "./jobs/fetch-source";
 import { handleEnrichItem } from "./jobs/enrich-item";
 import { handleNameCluster } from "./jobs/name-cluster";
 import { handleRetention } from "./jobs/retention";
+import { handleRecommendXSignals } from "./jobs/recommend-x-signals";
 import {
   FETCH_QUEUE_NAME,
   removeSourceSchedule,
@@ -28,6 +29,7 @@ if (!redisUrl) {
 register(hnConnector);
 register(rssConnector);
 register(xRsshubConnector);
+register(xRsshubSearchConnector);
 register(wechatWeweConnector);
 
 const queueConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
@@ -40,6 +42,7 @@ const queue = new Queue(FETCH_QUEUE_NAME, { connection: queueConnection });
 const enrichQueue = new Queue("enrich-item", { connection: enrichQueueConnection });
 const nameClusterQueue = new Queue("name-cluster", { connection: enrichQueueConnection });
 const retentionQueue = new Queue("retention", { connection: enrichQueueConnection });
+const recommendXSignalsQueue = new Queue("recommend-x-signals", { connection: enrichQueueConnection });
 const worker = new Worker(
   FETCH_QUEUE_NAME,
   async (job) =>
@@ -118,6 +121,25 @@ const retentionWorker = new Worker(
     concurrency: 1,
   },
 );
+const recommendXSignalsWorker = new Worker(
+  "recommend-x-signals",
+  async (job) => {
+    const result = await handleRecommendXSignals(job);
+    if (result.ok && Array.isArray(result.created) && result.created.length > 0) {
+      await syncRepeatJobs(queue);
+      await Promise.all(
+        result.created.map((sourceId) =>
+          queue.add(FETCH_QUEUE_NAME, { sourceId }, { removeOnComplete: 100, removeOnFail: 200 }),
+        ),
+      );
+    }
+    return result;
+  },
+  {
+    connection: enrichWorkerConnection,
+    concurrency: 1,
+  },
+);
 
 function logJobFailure(queueName: string, job: { id?: string; name?: string; data?: unknown } | undefined, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -163,6 +185,15 @@ async function main() {
       opts: { removeOnComplete: 50, removeOnFail: 200 },
     },
   );
+  await recommendXSignalsQueue.upsertJobScheduler(
+    "daily-recommend-x-signals",
+    { pattern: "0 20 3 * * *" },
+    {
+      name: "recommend-x-signals",
+      data: { limit: 8 },
+      opts: { removeOnComplete: 50, removeOnFail: 200 },
+    },
+  );
   subscribeSourceChanges(subConnection, queue);
   log.info("scheduler ready");
 }
@@ -191,6 +222,12 @@ retentionWorker.on("completed", (job, result) => {
 retentionWorker.on("failed", (job, error) => {
   logJobFailure("retention", job, error);
 });
+recommendXSignalsWorker.on("completed", (job, result) => {
+  log.info("job completed", { queue: "recommend-x-signals", jobName: job.name, jobId: job.id, data: job.data, result });
+});
+recommendXSignalsWorker.on("failed", (job, error) => {
+  logJobFailure("recommend-x-signals", job, error);
+});
 
 async function shutdown() {
   log.info("worker shutting down");
@@ -198,10 +235,12 @@ async function shutdown() {
   await enrichWorker.close();
   await nameClusterWorker.close();
   await retentionWorker.close();
+  await recommendXSignalsWorker.close();
   await queue.close();
   await enrichQueue.close();
   await nameClusterQueue.close();
   await retentionQueue.close();
+  await recommendXSignalsQueue.close();
   await subConnection.quit();
   await queueConnection.quit();
   await workerConnection.quit();

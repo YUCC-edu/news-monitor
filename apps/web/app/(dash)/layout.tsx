@@ -15,7 +15,6 @@ const CRUMB = {
     "/": "总编台",
     "/categories": "分类",
     "/favorites": "收藏",
-    "/link-saves": "博主信源",
     "/sources": "信源库",
     "/recommended-sources": "推荐信源",
     "/creators": "博主订阅",
@@ -28,7 +27,6 @@ const CRUMB = {
     "/": "News Desk",
     "/categories": "Categories",
     "/favorites": "Favorites",
-    "/link-saves": "Blog Sources",
     "/sources": "Source Library",
     "/recommended-sources": "Recommended Sources",
     "/creators": "Creator Feeds",
@@ -46,7 +44,6 @@ const NAV_LABEL_EN: Record<string, string> = {
   总编台: "News Desk",
   分类: "Categories",
   收藏: "Favorites",
-  博主信源: "Blog Sources",
   信源库: "Source Library",
   推荐信源: "Recommended Sources",
   博主订阅: "Creator Feeds",
@@ -57,49 +54,34 @@ const NAV_LABEL_EN: Record<string, string> = {
 
 function BrandMark() {
   return (
-    <span
+    <svg
       aria-hidden="true"
+      viewBox="0 0 108 52"
       style={{
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        border: "1px solid var(--border-strong)",
-        display: "inline-grid",
-        placeItems: "center",
-        position: "relative",
-        background: "rgba(255,255,255,0.03)",
-        overflow: "hidden",
+        width: 50,
+        height: 34,
+        display: "block",
+        color: "var(--fg-0)",
+        flex: "0 0 auto",
       }}
     >
-      <span
-        style={{
-          position: "absolute",
-          left: 8,
-          top: 4,
-          fontSize: 18,
-          fontWeight: 800,
-          fontFamily: "var(--font-mono)",
-          color: "var(--fg-0)",
-          transform: "skewX(-16deg) rotate(-10deg)",
-        }}
-      >
-        N
-      </span>
-      <span
-        style={{
-          position: "absolute",
-          right: 8,
-          bottom: 3,
-          fontSize: 18,
-          fontWeight: 800,
-          fontFamily: "var(--font-mono)",
-          color: "var(--fg-0)",
-          transform: "rotate(180deg) skewX(-14deg)",
-        }}
-      >
-        V
-      </span>
-    </span>
+      <path
+        d="M6 44 L26 8 L46 44 L66 8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M64 44 L82 8 L100 44"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -120,20 +102,19 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
   }, []);
 
   const groups = Array.from(new Set(DASH_NAV.map((entry) => entry.group).filter(Boolean))) as string[];
-  const crumbLabel = CRUMB[locale][pathname as keyof (typeof CRUMB)["zh-CN"]] ?? "news-monitor";
+  const navLabel = DASH_NAV.find((entry) => entry.href === pathname)?.label;
+  const crumbLabel = CRUMB[locale][pathname as keyof (typeof CRUMB)["zh-CN"]] ?? navLabel ?? "news-monitor";
 
   const sidebarLead = useMemo(
     () =>
       locale === "zh-CN"
         ? {
-            brand: "新闻监测",
-            workspace: "黑白情报总编台",
+            brand: "News-Monitor",
             search: "Ctrl/Cmd+K 搜索",
             menu: "打开导航",
           }
         : {
-            brand: "news-monitor",
-            workspace: "Monochrome newsroom console",
+            brand: "News-Monitor",
             search: "Ctrl/Cmd+K Search",
             menu: "Open navigation",
           },
@@ -161,21 +142,10 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <BrandMark />
             <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
-              <div style={{ fontWeight: 800, color: "var(--fg-0)", fontSize: 16, letterSpacing: 0.2 }}>
+              <div style={{ fontWeight: 800, color: "var(--fg-0)", fontSize: 17, letterSpacing: 0 }}>
                 {sidebarLead.brand}
               </div>
             </div>
-          </div>
-
-          <div
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              padding: "10px 12px",
-              background: "rgba(255,255,255,0.02)",
-            }}
-          >
-            <div style={{ color: "var(--fg-0)", fontWeight: 700, fontSize: 13 }}>{sidebarLead.workspace}</div>
           </div>
         </div>
 

@@ -2,6 +2,7 @@ import { type SourcePreset, type SourcePresetKind } from "./source-presets";
 
 export type RecommendedAiSourceSection =
   | "high-signal"
+  | "x-signal"
   | "chinese"
   | "official"
   | "industry"
@@ -12,7 +13,7 @@ export type RecommendedAiSource = SourcePreset & {
   homepageUrl: string;
   access: "free";
   rationale: string;
-  sourcePool: "official" | "industry" | "hn-popular-blogs-2025" | "internal" | "chinese";
+  sourcePool: "official" | "industry" | "x-signal" | "hn-popular-blogs-2025" | "internal" | "chinese";
 };
 
 export const RECOMMENDED_SECTION_META: Record<
@@ -22,6 +23,10 @@ export const RECOMMENDED_SECTION_META: Record<
   "high-signal": {
     label: "高信号作者",
     description: "更适合看观点、模型判断和工具链变化。",
+  },
+  "x-signal": {
+    label: "X 信号",
+    description: "用于补充突发讨论和关键词热度的公共 X 搜索源。",
   },
   chinese: {
     label: "中文源",
@@ -179,6 +184,33 @@ const HN_TOP_FEED_SOURCES: RecommendedAiSource[] = [
     sourcePool: "hn-popular-blogs-2025",
   },
 ];
+
+const X_SIGNAL_SOURCES: RecommendedAiSource[] = [
+  "OpenAI",
+  "Anthropic",
+  "Claude",
+  "GPT-5",
+  "AI agent",
+  "Gemini",
+  "DeepSeek",
+].map((query) => ({
+  id: `x-search-${query.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+  name: `X Search: ${query}`,
+  description: `公共 X 搜索信号：${query}`,
+  kind: "x-rsshub-search",
+  config: { query, lang: "en", description: `High-signal X posts mentioning ${query}` },
+  fetchIntervalSec: 600,
+  initialFetchDays: 1,
+  maxItemAgeDays: 30,
+  category: "hotspot",
+  tags: ["x", "signal", "ai"],
+  priority: 91,
+  section: "x-signal",
+  homepageUrl: "https://x.com/search",
+  access: "free",
+  rationale: "用于补充不依赖手动关注博主的 X 讨论信号。",
+  sourcePool: "x-signal",
+}));
 
 const CHINESE_SOURCES: RecommendedAiSource[] = [
   {
@@ -636,6 +668,7 @@ const RESEARCH_SOURCES: RecommendedAiSource[] = [
 
 export const ALL_RECOMMENDED_AI_SOURCES: RecommendedAiSource[] = [
   ...HN_TOP_FEED_SOURCES,
+  ...X_SIGNAL_SOURCES,
   ...CHINESE_SOURCES,
   ...OFFICIAL_SOURCES,
   ...INDUSTRY_SOURCES,
@@ -649,7 +682,7 @@ export function listRecommendedAiSources(): RecommendedAiSource[] {
 }
 
 export function buildRecommendedSourceSections(rows = listRecommendedAiSources()) {
-  const order: RecommendedAiSourceSection[] = ["high-signal", "chinese", "official", "industry", "research"];
+  const order: RecommendedAiSourceSection[] = ["high-signal", "x-signal", "chinese", "official", "industry", "research"];
   return order.map((key) => ({
     key,
     ...RECOMMENDED_SECTION_META[key],
@@ -685,6 +718,11 @@ export function getRecommendedSourceSignature(input: {
   if (input.kind === "x-rsshub") {
     const handle = typeof config.handle === "string" ? config.handle.replace(/^@/, "").trim().toLowerCase() : "";
     return handle ? `x:${handle}` : `x:${JSON.stringify(config)}`;
+  }
+  if (input.kind === "x-rsshub-search") {
+    const query = typeof config.query === "string" ? config.query.trim().toLowerCase() : "";
+    const lang = typeof config.lang === "string" ? config.lang.trim().toLowerCase() : "";
+    return query ? `x-search:${query}${lang ? `:${lang}` : ""}` : `x-search:${JSON.stringify(config)}`;
   }
   if (input.kind === "wechat-wewe") {
     const feedUrl = typeof config.feedUrl === "string" ? config.feedUrl : "";

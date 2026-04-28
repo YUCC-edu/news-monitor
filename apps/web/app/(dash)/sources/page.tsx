@@ -14,7 +14,7 @@ import { Skeleton } from "@/app/ui/skeleton";
 import { useToast } from "@/app/ui/toast-context";
 import { readJsonResponse } from "@/lib/read-json-response";
 
-type SourceKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+type SourceKind = "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
 type SourceScope = "public_seed" | "personal";
 
 type SourceRow = {
@@ -51,6 +51,7 @@ const kindLabels: Record<SourceKind, string> = {
   rss: "RSS",
   hn: "黑客新闻",
   "x-rsshub": "X（RSSHub）",
+  "x-rsshub-search": "X 搜索",
   "wechat-wewe": "公众号（WeWe-RSS）",
 };
 
@@ -192,6 +193,7 @@ export default function SourcesPage() {
   const [hnQuery, setHnQuery] = useState("");
   const [hnPointsMin, setHnPointsMin] = useState(50);
   const [xHandle, setXHandle] = useState("OpenAI");
+  const [xSearchQuery, setXSearchQuery] = useState("OpenAI");
   const [weweFeedUrl, setWeweFeedUrl] = useState("");
   const [weweAccountName, setWeweAccountName] = useState("");
   const [dedupHint, setDedupHint] = useState<SourceRow | null>(null);
@@ -211,6 +213,9 @@ export default function SourcesPage() {
   const [dupGroups, setDupGroups] = useState<DupGroup[]>([]);
   const [dupPicks, setDupPicks] = useState<Record<string, string>>({});
   const [merging, setMerging] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState("");
+  const [clearing, setClearing] = useState(false);
   const [drawerSource, setDrawerSource] = useState<SourceRow | null>(null);
   const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
 
@@ -218,8 +223,9 @@ export default function SourcesPage() {
     if (kind === "rss") return { feedUrl: rssUrl };
     if (kind === "hn") return { query: hnQuery, pointsMin: hnPointsMin };
     if (kind === "x-rsshub") return { handle: xHandle };
+    if (kind === "x-rsshub-search") return { query: xSearchQuery, lang: "en" };
     return { feedUrl: weweFeedUrl, accountName: weweAccountName };
-  }, [kind, rssUrl, hnQuery, hnPointsMin, xHandle, weweFeedUrl, weweAccountName]);
+  }, [kind, rssUrl, hnQuery, hnPointsMin, xHandle, xSearchQuery, weweFeedUrl, weweAccountName]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -406,6 +412,31 @@ export default function SourcesPage() {
     await load();
   }
 
+  async function clearSourceLibrary() {
+    if (clearConfirm !== "DELETE ALL SOURCES") {
+      toast("请输入 DELETE ALL SOURCES 后再清空");
+      return;
+    }
+    setClearing(true);
+    try {
+      const res = await fetch("/api/sources", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: clearConfirm }),
+      });
+      const data = await readJsonResponse<{ deletedSources: number; deletedClusters: number }>(res, "/api/sources");
+      toast(`已清空：删除 ${data.deletedSources} 个信源，清理 ${data.deletedClusters} 个事件簇`);
+      setClearOpen(false);
+      setClearConfirm("");
+      setDrawerSource(null);
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClearing(false);
+    }
+  }
+
   async function openDuplicates() {
     const [r, cr] = await Promise.all([
       fetch("/api/sources/duplicates"),
@@ -549,6 +580,9 @@ export default function SourcesPage() {
           <Button variant="ghost" size="sm" onClick={() => void openDuplicates()}>
             检测重复
           </Button>
+          <Button variant="danger" size="sm" onClick={() => setClearOpen(true)} disabled={rows.length === 0}>
+            清空信源库
+          </Button>
         </div>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -631,6 +665,7 @@ export default function SourcesPage() {
               <option value="rss">RSS</option>
               <option value="hn">Hacker News</option>
               <option value="x-rsshub">X (RSSHub)</option>
+              <option value="x-rsshub-search">X 搜索</option>
               <option value="wechat-wewe">公众号 (WeWe-RSS)</option>
             </Select>
           </label>
@@ -713,6 +748,16 @@ export default function SourcesPage() {
               <Input
                 value={xHandle}
                 onChange={(e) => setXHandle(e.target.value)}
+                onBlur={() => void checkDedup()}
+              />
+            </label>
+          )}
+          {kind === "x-rsshub-search" && (
+            <label className="nm-label">
+              Search Query
+              <Input
+                value={xSearchQuery}
+                onChange={(e) => setXSearchQuery(e.target.value)}
                 onBlur={() => void checkDedup()}
               />
             </label>
@@ -1143,6 +1188,34 @@ export default function SourcesPage() {
               onClick={() => void importSelectedPresetItems()}
             >
               {importingPreset ? "导入中..." : `导入所选（${selectedPresetItems.length}）`}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog open={clearOpen} onClose={() => !clearing && setClearOpen(false)} title="清空信源库">
+        <div style={{ display: "grid", gap: 12 }}>
+          <p style={{ color: "var(--fg-1)", fontSize: 14, lineHeight: 1.7, margin: 0 }}>
+            这个操作会删除全部信源，并级联删除这些信源抓取到的动态、富化结果、收藏关联，同时清理无成员的事件簇。此操作不可撤销。
+          </p>
+          <div style={{ color: "var(--danger)", fontSize: 13 }}>
+            当前将删除 {rows.length} 个信源。确认请输入 <code>DELETE ALL SOURCES</code>。
+          </div>
+          <Input
+            value={clearConfirm}
+            onChange={(event) => setClearConfirm(event.target.value)}
+            placeholder="DELETE ALL SOURCES"
+          />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Button variant="ghost" disabled={clearing} onClick={() => setClearOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              disabled={clearing || clearConfirm !== "DELETE ALL SOURCES"}
+              onClick={() => void clearSourceLibrary()}
+            >
+              {clearing ? "清空中..." : "确认清空"}
             </Button>
           </div>
         </div>

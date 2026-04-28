@@ -3,7 +3,7 @@ import type { SQL } from "drizzle-orm";
 import { computeDedupKey, type SourceKind } from "./dedup";
 import { getDb, getSql } from "./client";
 import type { Source } from "./schema";
-import { extractAttentionKeywords } from "@news/shared";
+import { displayAttentionKeyword, extractAttentionKeywords } from "@news/shared";
 import {
   clusters,
   assistantActions,
@@ -36,6 +36,7 @@ export type RecordItemInput = {
   title?: string;
   contentText?: string;
   media?: Array<{ type: "image" | "video"; url: string; thumb?: string }>;
+  engagement?: unknown;
   publishedAt?: Date;
   raw: unknown;
 };
@@ -455,6 +456,27 @@ export async function deleteSource(id: string) {
   return deleted.length > 0;
 }
 
+export async function deleteAllSources() {
+  const sqlClient = getSql();
+  return sqlClient.begin(async (tx) => {
+    const deletedSources = await tx<{ id: string }[]>`
+      DELETE FROM sources
+      RETURNING id
+    `;
+    const deletedClusters = await tx<{ id: string }[]>`
+      DELETE FROM clusters c
+      WHERE NOT EXISTS (
+        SELECT 1 FROM item_enrichments ie WHERE ie.cluster_id = c.id
+      )
+      RETURNING id
+    `;
+    return {
+      deletedSources: deletedSources.length,
+      deletedClusters: deletedClusters.length,
+    };
+  });
+}
+
 export type MarkSourceRunFailureMeta = {
   enabled: boolean;
   failCount: number;
@@ -627,7 +649,12 @@ export async function recordItems(sourceId: string, payload: RecordItemInput[]) 
     contentText: item.contentText ?? null,
     media: item.media ?? [],
     publishedAt: item.publishedAt ?? null,
-    raw: item.raw,
+    raw:
+      item.engagement && item.raw && typeof item.raw === "object" && !Array.isArray(item.raw)
+        ? { ...(item.raw as Record<string, unknown>), _normalizedEngagement: item.engagement }
+        : item.engagement
+          ? { raw: item.raw, _normalizedEngagement: item.engagement }
+          : item.raw,
   }));
   return db
     .insert(items)
@@ -661,8 +688,25 @@ export async function upsertItemEnrichment(input: {
   categoryEntity?: string[];
   embedding?: number[];
   clusterId?: string | null;
+  enrichmentSource?: "llm" | "rules";
+  enrichmentVersion?: string;
+  platformMetrics?: Record<string, unknown>;
+  fullContentText?: string;
+  contentSummaryZh?: string;
+  contentExtractSource?: "url" | "feed" | "none";
+  contentQualityScore?: number;
+  summaryVersion?: string;
+  llmKeywords?: string[];
+  eventSummary?: string;
 }) {
   const db = getDb();
+  const enrichmentSource = input.enrichmentSource ?? "rules";
+  const enrichmentVersion = input.enrichmentVersion ?? (enrichmentSource === "llm" ? "llm-v1" : "rules-v1");
+  const platformMetrics = input.platformMetrics ?? {};
+  const contentExtractSource = input.contentExtractSource ?? "feed";
+  const contentQualityScore = Math.min(Math.max(input.contentQualityScore ?? 0, 0), 100);
+  const summaryVersion = input.summaryVersion ?? "none";
+  const llmKeywords = input.llmKeywords ?? [];
   await db
     .insert(itemEnrichments)
     .values({
@@ -675,6 +719,16 @@ export async function upsertItemEnrichment(input: {
       categoryTopic: input.categoryTopic ?? [],
       categoryEntity: input.categoryEntity ?? [],
       embedding: input.embedding,
+      enrichmentSource,
+      enrichmentVersion,
+      platformMetrics,
+      fullContentText: input.fullContentText ?? null,
+      contentSummaryZh: input.contentSummaryZh ?? null,
+      contentExtractSource,
+      contentQualityScore,
+      summaryVersion,
+      llmKeywords,
+      eventSummary: input.eventSummary ?? null,
       clusterId: input.clusterId ?? null,
       enrichedAt: new Date(),
     })
@@ -689,6 +743,16 @@ export async function upsertItemEnrichment(input: {
         categoryTopic: input.categoryTopic ?? [],
         categoryEntity: input.categoryEntity ?? [],
         embedding: input.embedding,
+        enrichmentSource,
+        enrichmentVersion,
+        platformMetrics,
+        fullContentText: input.fullContentText ?? null,
+        contentSummaryZh: input.contentSummaryZh ?? null,
+        contentExtractSource,
+        contentQualityScore,
+        summaryVersion,
+        llmKeywords,
+        eventSummary: input.eventSummary ?? null,
         clusterId: input.clusterId ?? null,
         enrichedAt: new Date(),
       },
@@ -910,9 +974,13 @@ export async function bumpCluster(clusterId: string) {
     .where(eq(clusters.id, clusterId));
 }
 
-export async function setClusterTopic(clusterId: string, topic: string) {
+export async function setClusterTopic(
+  clusterId: string,
+  topic: string,
+  topicSource: "rules" | "llm" = "rules",
+) {
   const db = getDb();
-  await db.update(clusters).set({ topic }).where(eq(clusters.id, clusterId));
+  await db.update(clusters).set({ topic, topicSource }).where(eq(clusters.id, clusterId));
 }
 
 export async function getClusterRecentTitles(clusterId: string, limit = 5) {
@@ -1285,6 +1353,9 @@ export async function listItems(params: {
         ilike(items.contentText, `%${params.q}%`),
         ilike(itemEnrichments.titleZh, `%${params.q}%`),
         ilike(itemEnrichments.contentZh, `%${params.q}%`),
+        ilike(itemEnrichments.fullContentText, `%${params.q}%`),
+        ilike(itemEnrichments.contentSummaryZh, `%${params.q}%`),
+        ilike(itemEnrichments.eventSummary, `%${params.q}%`),
       )!,
     );
   }
@@ -1319,6 +1390,8 @@ export async function listItems(params: {
       contentText: items.contentText,
       titleZh: itemEnrichments.titleZh,
       contentZh: itemEnrichments.contentZh,
+      contentSummaryZh: itemEnrichments.contentSummaryZh,
+      eventSummary: itemEnrichments.eventSummary,
       tags: itemEnrichments.tags,
       categoryDomain: itemEnrichments.categoryDomain,
       categoryTopic: itemEnrichments.categoryTopic,
@@ -2079,25 +2152,44 @@ export async function getStatsOverview(params?: {
       source_id: string;
       source_name: string;
       source_kind: string;
+      item_id: string;
+      item_url: string | null;
       latest_item_at: Date | string;
       title: string | null;
       content_text: string | null;
       title_zh: string | null;
       content_zh: string | null;
+      full_content_text: string | null;
+      content_summary_zh: string | null;
+      event_summary: string | null;
+      llm_keywords: string[] | null;
+      cluster_id: string | null;
+      cluster_topic: string | null;
+      cluster_topic_source: string | null;
     }[]
   >`
     SELECT
       i.source_id::text AS source_id,
       s.name AS source_name,
       s.kind AS source_kind,
+      i.id::text AS item_id,
+      i.url AS item_url,
       i.fetched_at AS latest_item_at,
       i.title,
       i.content_text,
       ie.title_zh,
-      ie.content_zh
+      ie.content_zh,
+      ie.full_content_text,
+      ie.content_summary_zh,
+      ie.event_summary,
+      ie.llm_keywords,
+      ie.cluster_id::text AS cluster_id,
+      c.topic AS cluster_topic,
+      c.topic_source AS cluster_topic_source
     FROM items i
     INNER JOIN sources s ON s.id = i.source_id
     LEFT JOIN item_enrichments ie ON ie.item_id = i.id
+    LEFT JOIN clusters c ON c.id = ie.cluster_id
     WHERE i.fetched_at >= ${startAt.toISOString()}::timestamptz
       AND i.fetched_at < ${endAt.toISOString()}::timestamptz
       ${platformFrag}
@@ -2113,6 +2205,41 @@ export async function getStatsOverview(params?: {
       distinct_sources: number;
       source_names: string | null;
       source_entries: Map<string, { id: string; name: string; kind: string }>;
+      related_events: Map<
+        string,
+        {
+          id: string;
+          topic: string | null;
+          topic_source: string | null;
+          mentions: number;
+          latest_item_at: Date | null;
+          source_entries: Map<string, { id: string; name: string; kind: string }>;
+          representative_items: Map<
+            string,
+            {
+              itemId: string;
+              title: string | null;
+              titleZh: string | null;
+              url: string | null;
+              sourceName: string;
+              platform: string;
+              fetchedAt: Date | null;
+            }
+          >;
+        }
+      >;
+      representative_items: Map<
+        string,
+        {
+          itemId: string;
+          title: string | null;
+          titleZh: string | null;
+          url: string | null;
+          sourceName: string;
+          platform: string;
+          fetchedAt: Date | null;
+        }
+      >;
       latest_item_at: Date | null;
       document_count: number;
     }
@@ -2123,12 +2250,20 @@ export async function getStatsOverview(params?: {
     const text = [
       row.title_zh,
       row.title,
+      row.event_summary,
+      row.content_summary_zh,
       row.content_zh,
+      row.full_content_text,
       row.content_text,
+      row.cluster_topic,
+      ...(row.llm_keywords ?? []),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join(" ");
-    const keywords = extractAttentionKeywords(text);
+    const keywords = [
+      ...(row.llm_keywords ?? []).map((keyword) => displayAttentionKeyword(keyword)),
+      ...extractAttentionKeywords(text),
+    ];
     if (keywords.length === 0) continue;
     const uniqueKeywords = [...new Set(keywords)];
     for (const keyword of uniqueKeywords) {
@@ -2143,6 +2278,8 @@ export async function getStatsOverview(params?: {
           distinct_sources: 0,
           source_names: null,
           source_entries: new Map<string, { id: string; name: string; kind: string }>(),
+          related_events: new Map(),
+          representative_items: new Map(),
           latest_item_at: null,
           document_count: 0,
         };
@@ -2156,6 +2293,48 @@ export async function getStatsOverview(params?: {
         });
       }
       current.distinct_sources = current.source_entries.size;
+      current.representative_items.set(row.item_id, {
+        itemId: row.item_id,
+        title: row.title,
+        titleZh: row.title_zh,
+        url: row.item_url,
+        sourceName: row.source_name,
+        platform: row.source_kind,
+        fetchedAt: latestItemAt,
+      });
+      if (row.cluster_id) {
+        const event =
+          current.related_events.get(row.cluster_id) ??
+          {
+            id: row.cluster_id,
+            topic: row.cluster_topic,
+            topic_source: row.cluster_topic_source,
+            mentions: 0,
+            latest_item_at: null,
+            source_entries: new Map<string, { id: string; name: string; kind: string }>(),
+            representative_items: new Map(),
+          };
+        event.mentions += 1;
+        event.latest_item_at =
+          event.latest_item_at && latestItemAt && dateTimeValue(event.latest_item_at) > dateTimeValue(latestItemAt)
+            ? event.latest_item_at
+            : latestItemAt;
+        event.source_entries.set(row.source_id, {
+          id: row.source_id,
+          name: row.source_name,
+          kind: row.source_kind,
+        });
+        event.representative_items.set(row.item_id, {
+          itemId: row.item_id,
+          title: row.title,
+          titleZh: row.title_zh,
+          url: row.item_url,
+          sourceName: row.source_name,
+          platform: row.source_kind,
+          fetchedAt: latestItemAt,
+        });
+        current.related_events.set(row.cluster_id, event);
+      }
       current.latest_item_at =
         current.latest_item_at && latestItemAt && dateTimeValue(current.latest_item_at) > dateTimeValue(latestItemAt)
           ? current.latest_item_at
@@ -2188,7 +2367,7 @@ export async function getStatsOverview(params?: {
       const bMs = dateTimeValue(b.latest_item_at);
       return bMs - aMs;
     })
-    .slice(0, topN);
+    .slice(0, Math.max(topN * 4, topN));
 
   const scoreOrder =
     clusterSort === "sources"
@@ -2271,15 +2450,11 @@ export async function getStatsOverview(params?: {
     LIMIT ${topN}
   `;
 
-  const keywordSourceMax = Math.max(
-    ...topTags.map((row) => row.distinct_sources ?? 0),
-    1,
-  );
   const keywordMentionMax = Math.max(
     ...topTags.map((row) => row.mentions ?? 0),
     1,
   );
-  const keywordGroups = topTags.map((row) => {
+  const keywordGroupCandidates = topTags.map((row) => {
     const sourceEntriesRaw = Array.isArray(row.source_entries) ? row.source_entries : [];
     const sourceMap = new Map<string, { id: string; name: string; kind: string }>();
     for (const entry of sourceEntriesRaw) {
@@ -2294,35 +2469,88 @@ export async function getStatsOverview(params?: {
     const sourceEntries = [...sourceMap.values()];
     const sourceWeights = sourceEntries.map((entry) => sourceQualityWeight(entry.name, entry.kind));
     const weightedDistinctSources = sourceWeights.reduce((acc, value) => acc + value, 0);
+    return { row, weightedDistinctSources };
+  });
+  const keywordSourceMax = Math.max(
+    ...keywordGroupCandidates.map((candidate) => candidate.weightedDistinctSources),
+    1,
+  );
+  const keywordGroups = keywordGroupCandidates.map(({ row, weightedDistinctSources }) => {
     const keywordConsistency =
       row.mentions > 0 ? Math.min(1, weightedDistinctSources / row.mentions) : 0;
     const recencyScore = recencyScoreForDate(row.latest_item_at, 72);
     const inverseDocumentFrequency = metricNumber(row.inverse_document_frequency);
     const idfScore = normalizeScore(inverseDocumentFrequency, 4);
     const attentionScore =
-      normalizeScore(weightedDistinctSources, keywordSourceMax) * 0.35 +
-      normalizeScore(row.mentions, keywordMentionMax) * 0.25 +
+      normalizeScore(weightedDistinctSources, keywordSourceMax) * 0.42 +
+      normalizeScore(row.mentions, keywordMentionMax) * 0.22 +
       idfScore * 0.15 +
-      recencyScore * 0.15 +
-      keywordConsistency * 0.1;
+      recencyScore * 0.13 +
+      keywordConsistency * 0.08;
+    const recencyLabel =
+      recencyScore >= 0.72 ? "近期仍在升温" : recencyScore >= 0.35 ? "近期仍有提及" : "主要来自较早窗口";
+    const relatedEvents = [...row.related_events.values()]
+      .map((event) => {
+        const sourceEntries = [...event.source_entries.values()];
+        const sourceNames = sourceEntries
+          .map((entry) => entry.name)
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"))
+          .join(" / ");
+        return {
+          id: event.id,
+          topic: event.topic,
+          displayTitle: normalizeDisplayText(event.topic) || normalizeDisplayText([...event.representative_items.values()][0]?.titleZh ?? [...event.representative_items.values()][0]?.title) || row.keyword,
+          topicState: event.topic_source === "llm" ? "named" : event.topic ? "generated" : "provisional",
+          mentions: event.mentions,
+          distinctSources: sourceEntries.length,
+          sourceNames,
+          latestItemAt: event.latest_item_at,
+          representativeItems: [...event.representative_items.values()]
+            .sort((a, b) => dateTimeValue(b.fetchedAt) - dateTimeValue(a.fetchedAt))
+            .slice(0, 3),
+        };
+      })
+      .sort((a, b) => {
+        if (b.mentions !== a.mentions) return b.mentions - a.mentions;
+        if (b.distinctSources !== a.distinctSources) return b.distinctSources - a.distinctSources;
+        return dateTimeValue(b.latestItemAt) - dateTimeValue(a.latestItemAt);
+      })
+      .slice(0, 3);
+    const representativeItems = [...row.representative_items.values()]
+      .sort((a, b) => dateTimeValue(b.fetchedAt) - dateTimeValue(a.fetchedAt))
+      .slice(0, 5);
     return {
       keyword: normalizeKeywordText(row.keyword),
       displayTitle: normalizeDisplayText(row.keyword),
+      summary:
+        relatedEvents.length > 0
+          ? `${normalizeDisplayText(row.keyword)} 关联 ${relatedEvents.length} 个事件，主要由 ${row.distinct_sources} 个信源在当前窗口提及。`
+          : `${normalizeDisplayText(row.keyword)} 在当前窗口被 ${row.distinct_sources} 个信源提及。`,
       attentionScore: Number(attentionScore.toFixed(4)),
       keywordConsistency: Number(keywordConsistency.toFixed(4)),
       mentions: row.mentions,
       distinctSources: row.distinct_sources,
       weightedDistinctSources: Number(weightedDistinctSources.toFixed(2)),
       sourceNames: row.source_names ?? "",
+      eventCount: row.related_events.size,
+      relatedEvents,
+      representativeItems,
       selectionWindow: range,
       whyAttention: [
-        `${row.distinct_sources} distinct source${row.distinct_sources === 1 ? "" : "s"}`,
-        `${row.mentions} mention${row.mentions === 1 ? "" : "s"} in window`,
-        `${weightedDistinctSources.toFixed(2)} weighted source coverage`,
-        `${inverseDocumentFrequency.toFixed(2)} inverse document weight`,
+        `${row.distinct_sources} 个不同信源覆盖`,
+        `窗口内提及 ${row.mentions} 次`,
+        `加权信源覆盖 ${weightedDistinctSources.toFixed(2)}`,
+        `${recencyLabel}，逆文档权重 ${inverseDocumentFrequency.toFixed(2)}`,
       ],
     };
-  });
+  }).sort((a, b) =>
+    b.attentionScore - a.attentionScore ||
+    b.weightedDistinctSources - a.weightedDistinctSources ||
+    b.distinctSources - a.distinctSources ||
+    b.mentions - a.mentions ||
+    a.displayTitle.localeCompare(b.displayTitle, "zh-Hans-CN"),
+  ).slice(0, topN);
 
   const trend = await sqlClient<{
     day: Date;
@@ -2484,7 +2712,7 @@ export async function getStatsOverview(params?: {
     totals: safeTotals,
     delta,
     byPlatform,
-    topTags,
+    topTags: topTags.slice(0, topN),
     topClusters: topClusters.map((c) => ({
       id: c.id,
       topic: c.topic,

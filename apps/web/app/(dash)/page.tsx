@@ -66,12 +66,42 @@ type Overview = {
   keywordGroups?: Array<{
     keyword: string;
     displayTitle?: string;
+    summary?: string;
     attentionScore?: number;
     keywordConsistency?: number;
     mentions?: number;
     distinctSources?: number;
     weightedDistinctSources?: number;
     sourceNames?: string;
+    eventCount?: number;
+    relatedEvents?: Array<{
+      id: string;
+      topic: string | null;
+      displayTitle?: string;
+      topicState?: "named" | "generated" | "provisional" | "fallback";
+      mentions?: number;
+      distinctSources?: number;
+      sourceNames?: string;
+      latestItemAt?: string | null;
+      representativeItems?: Array<{
+        itemId: string;
+        title: string | null;
+        titleZh: string | null;
+        url: string | null;
+        sourceName: string;
+        platform: string;
+        fetchedAt: string | null;
+      }>;
+    }>;
+    representativeItems?: Array<{
+      itemId: string;
+      title: string | null;
+      titleZh: string | null;
+      url: string | null;
+      sourceName: string;
+      platform: string;
+      fetchedAt: string | null;
+    }>;
     whyAttention?: string[];
   }>;
   hotspot: {
@@ -219,7 +249,65 @@ function DashboardSkeleton() {
   );
 }
 
-function KeywordBoard({ keywords }: { keywords: NonNullable<Overview["keywordGroups"]> }) {
+function KeywordEvents({
+  keyword,
+  limit,
+  onOpenEvent,
+}: {
+  keyword: NonNullable<Overview["keywordGroups"]>[number];
+  limit: number;
+  onOpenEvent: (event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) => void;
+}) {
+  const events = (keyword.relatedEvents ?? []).slice(0, limit);
+  if (events.length === 0) {
+    const item = keyword.representativeItems?.[0];
+    return item ? (
+      <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+        代表动态：{item.titleZh || item.title || "暂无标题"} · {item.sourceName}
+      </div>
+    ) : null;
+  }
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {events.map((event) => (
+        <div
+          key={event.id}
+          style={{
+            display: "grid",
+            gap: 6,
+            padding: "10px 0",
+            borderTop: "1px solid var(--border)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "start" }}>
+            <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+              <div style={{ color: "var(--fg-0)", fontWeight: 600, lineHeight: 1.4 }}>
+                {event.displayTitle || event.topic || keywordTitle(keyword)}
+              </div>
+              <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                {event.distinctSources ?? 0} 个来源 · {event.mentions ?? 0} 次提及 · {formatRelativeTime(event.latestItemAt)}
+              </div>
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => onOpenEvent(event)}>
+              查看来源
+            </Button>
+          </div>
+          <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
+            {event.sourceNames || event.representativeItems?.map((item) => item.sourceName).join(" / ") || "来源列表不可用"}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function KeywordBoard({
+  keywords,
+  onOpenEvent,
+}: {
+  keywords: NonNullable<Overview["keywordGroups"]>;
+  onOpenEvent: (event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) => void;
+}) {
   const lead = keywords[0] ?? null;
   const rest = keywords.slice(1, 9);
   const totalMentions = keywords.reduce((sum, keyword) => sum + (keyword.mentions ?? 0), 0);
@@ -250,9 +338,11 @@ function KeywordBoard({ keywords }: { keywords: NonNullable<Overview["keywordGro
               {keywordTitle(lead)}
             </h2>
             <div className="nm-muted" style={{ lineHeight: 1.7 }}>
-              {lead.whyAttention?.join(" · ") ||
+              {lead.summary ||
+                lead.whyAttention?.join(" · ") ||
                 `关键词一致性 ${lead.keywordConsistency?.toFixed(2) ?? "0.00"} · 关注分 ${lead.attentionScore?.toFixed(2) ?? "0.00"}`}
             </div>
+            <KeywordEvents keyword={lead} limit={3} onOpenEvent={onOpenEvent} />
             <div className="nm-muted" style={{ fontSize: 12 }}>{lead.sourceNames || "来源列表不可用"}</div>
           </Card>
 
@@ -266,11 +356,13 @@ function KeywordBoard({ keywords }: { keywords: NonNullable<Overview["keywordGro
                   </div>
                   <div style={{ color: "var(--fg-0)", fontWeight: 650, lineHeight: 1.45 }}>{keywordTitle(keyword)}</div>
                   <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    {keyword.whyAttention?.slice(0, 2).join(" · ") ||
+                    {keyword.summary ||
+                      keyword.whyAttention?.slice(0, 2).join(" · ") ||
                       `关键词一致性 ${keyword.keywordConsistency?.toFixed(2) ?? "0.00"} · 关注分 ${keyword.attentionScore?.toFixed(2) ?? "0.00"}`}
                   </div>
+                  <KeywordEvents keyword={keyword} limit={1} onOpenEvent={onOpenEvent} />
                   <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                    {keyword.sourceNames || "来源列表不可用"}
+                    {keyword.eventCount ?? 0} 个事件 · {keyword.sourceNames || "来源列表不可用"}
                   </div>
                 </Card>
               ))}
@@ -441,6 +533,25 @@ function DashboardHomeInner() {
     }
   }
 
+  function openKeywordEvent(event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) {
+    void openSiblings(
+      {
+        id: event.id,
+        topic: event.displayTitle || event.topic,
+        itemCount: event.mentions ?? 0,
+        lastSeenAt: event.latestItemAt ?? new Date().toISOString(),
+        distinctSources: event.distinctSources ?? 1,
+        weightedDistinctSources: event.distinctSources ?? 1,
+        sourceNames: event.sourceNames ?? "",
+        itemsWindow: event.mentions ?? 0,
+        recencyScore: 0,
+        cohesionScore: 0,
+        crossPlatformScore: 0,
+      },
+      "public",
+    );
+  }
+
   return (
     <div style={{ display: "grid", gap: 22 }}>
       <section
@@ -454,9 +565,6 @@ function DashboardHomeInner() {
         }}
       >
         <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1.4, color: "var(--fg-3)" }}>
-            总编台工作面
-          </div>
           <h1 style={{ margin: 0, fontSize: 30, lineHeight: 1.12, color: "var(--fg-0)" }}>总编台</h1>
         </div>
 
@@ -537,7 +645,7 @@ function DashboardHomeInner() {
               gap: 16,
             }}
           >
-            <KeywordBoard keywords={overview.keywordGroups ?? []} />
+            <KeywordBoard keywords={overview.keywordGroups ?? []} onOpenEvent={openKeywordEvent} />
           </section>
 
           <section style={{ display: "grid", gap: 14 }}>

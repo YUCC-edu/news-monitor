@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export type SourceKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+export type SourceKind = "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
 
 function hashConfig(kind: SourceKind, config: unknown): string {
   const raw = JSON.stringify(config ?? {});
@@ -33,6 +33,12 @@ export function computeDedupKey(kind: SourceKind, config: unknown): string {
         const h = typeof c.handle === "string" ? c.handle.replace(/^@/, "").trim().toLowerCase() : "";
         if (!h) return `x:${hashConfig(kind, config)}`;
         return `x:${h}`;
+      }
+      case "x-rsshub-search": {
+        const q = typeof c.query === "string" ? c.query.trim().toLowerCase() : "";
+        const lang = typeof c.lang === "string" ? c.lang.trim().toLowerCase() : "";
+        if (!q) return `x-search:${hashConfig(kind, config)}`;
+        return `x-search:${q}${lang ? `:${lang}` : ""}`;
       }
       case "wechat-wewe": {
         const feedUrl = typeof c.feedUrl === "string" ? c.feedUrl : "";

@@ -11,7 +11,9 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const args: Record<string, unknown> = {
       range: url.searchParams.get("range") ?? "7d",
-      minSources: url.searchParams.get("minSources") ?? 2,
+      minSources: Number(url.searchParams.get("minSources") ?? "2") || 2,
+      topN: Number(url.searchParams.get("topN") ?? "10") || 10,
+      audience: url.searchParams.get("audience") === "personal" ? "personal" : "public",
     };
     const data = await runAssistantTool({
       requestId,

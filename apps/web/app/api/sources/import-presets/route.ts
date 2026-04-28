@@ -35,7 +35,7 @@ export async function POST(request: Request) {
           id: string;
           name: string;
           description?: string;
-          kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+  kind: "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
           config: Record<string, unknown>;
           homepageUrl?: string;
           fetchIntervalSec: number;

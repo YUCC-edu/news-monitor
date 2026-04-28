@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     const data = await runAssistantTool({
       requestId,
       actor: actor.actor,
-      role: actor.role,
+      role: "assistant_write_low",
       tool: "add_source",
       args: body,
     });

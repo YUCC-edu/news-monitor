@@ -16,7 +16,8 @@ test("listRecommendedAiSources returns a curated AI-only catalog", () => {
   assert.ok(rows.some((row) => row.id === "machine-heart"));
   assert.ok(rows.some((row) => row.id === "tencent-hunyuan"));
   assert.ok(rows.every((row) => (row.tags ?? []).includes("ai")));
-  assert.ok(rows.every((row) => row.kind === "rss" || row.kind === "hn"));
+  assert.ok(rows.some((row) => row.kind === "x-rsshub-search"));
+  assert.ok(rows.every((row) => row.kind === "rss" || row.kind === "hn" || row.kind === "x-rsshub-search"));
 });
 
 test("getRecommendedSourceSignature is stable for equivalent source identities", () => {
@@ -39,7 +40,7 @@ test("buildRecommendedSourceSections groups catalog into stable newsroom section
   const sections = buildRecommendedSourceSections(listRecommendedAiSources());
   assert.deepEqual(
     sections.map((section) => section.key),
-    ["high-signal", "chinese", "official", "industry", "research"],
+    ["high-signal", "x-signal", "chinese", "official", "industry", "research"],
   );
   assert.ok(sections.every((section) => section.items.length > 0));
 });

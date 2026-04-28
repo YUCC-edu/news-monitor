@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { deleteAllSources } from "@news/db";
 import { executeCapability } from "@news/engine";
 import { createLogger } from "@news/shared";
 import Redis from "ioredis";
@@ -6,6 +9,7 @@ import { enqueueFetchSource } from "@/lib/fetch-source-queue";
 
 let publishRedis: Redis | null = null;
 const log = createLogger("api:sources");
+const PUBLIC_SEED_DISABLED_PATH = path.resolve(process.cwd(), "..", "..", "data", "public-seed-disabled");
 
 function getPublishRedis() {
   if (!publishRedis) {
@@ -41,7 +45,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const t0 = Date.now();
   const body = (await request.json()) as {
-    kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+    kind: "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
     name: string;
     config: unknown;
     scope?: "public_seed" | "personal";
@@ -87,4 +91,42 @@ export async function POST(request: Request) {
     fetchIntervalSec: created.fetchIntervalSec,
   });
   return NextResponse.json(created, { status: 201 });
+}
+
+export async function DELETE(request: Request) {
+  const t0 = Date.now();
+  const body = await request.json().catch(() => null) as { confirm?: string } | null;
+  if (body?.confirm !== "DELETE ALL SOURCES") {
+    return NextResponse.json(
+      { error: "Confirmation phrase mismatch" },
+      { status: 400 },
+    );
+  }
+  try {
+    const result = await deleteAllSources();
+    await fs.mkdir(path.dirname(PUBLIC_SEED_DISABLED_PATH), { recursive: true });
+    await fs.writeFile(
+      PUBLIC_SEED_DISABLED_PATH,
+      `disabled_at=${new Date().toISOString()}\nreason=user-cleared-source-library\n`,
+      "utf-8",
+    );
+    try {
+      await getPublishRedis().publish(
+        "sources.changed",
+        JSON.stringify({ op: "delete-all" }),
+      );
+    } catch (e) {
+      log.warn("sources cleared but redis publish failed", { error: e });
+    }
+    log.warn("all sources deleted", {
+      latencyMs: Date.now() - t0,
+      deletedSources: result.deletedSources,
+      deletedClusters: result.deletedClusters,
+    });
+    return NextResponse.json({ ok: true, ...result });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    log.error("sources clear failed", { errorClass: e instanceof Error ? e.name : typeof e, message });
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }

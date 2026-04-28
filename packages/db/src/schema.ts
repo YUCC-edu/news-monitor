@@ -143,6 +143,16 @@ export const itemEnrichments = pgTable(
     enrichmentSource: text("enrichment_source").notNull().default("rules"),
     enrichmentVersion: text("enrichment_version").notNull().default("rules-v1"),
     platformMetrics: jsonb("platform_metrics").notNull().default(sql`'{}'::jsonb`),
+    fullContentText: text("full_content_text"),
+    contentSummaryZh: text("content_summary_zh"),
+    contentExtractSource: text("content_extract_source").notNull().default("feed"),
+    contentQualityScore: integer("content_quality_score").notNull().default(0),
+    summaryVersion: text("summary_version").notNull().default("none"),
+    llmKeywords: text("llm_keywords")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    eventSummary: text("event_summary"),
     clusterId: uuid("cluster_id").references(() => clusters.id, {
       onDelete: "set null",
     }),

@@ -21,6 +21,9 @@ export function resolveAvatarUrl(s: SourceLike): string | null {
       return `https://unavatar.io/twitter/${encodeURIComponent(h)}`;
     }
   }
+  if (s.kind === "x-rsshub-search") {
+    return null;
+  }
   if (s.kind === "rss") {
     const homepageUrl = typeof cfg.homepageUrl === "string" ? cfg.homepageUrl : "";
     const feedUrl = typeof cfg.feedUrl === "string" ? cfg.feedUrl : "";
@@ -39,6 +42,7 @@ export function resolveAvatarUrl(s: SourceLike): string | null {
 function monogramBg(kind: string): string {
   switch (kind) {
     case "x-rsshub":
+    case "x-rsshub-search":
       return "var(--avatar-x)";
     case "wechat-wewe":
       return "var(--avatar-wx)";

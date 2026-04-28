@@ -141,13 +141,17 @@ function validateToolArgs(tool: AssistantToolName, args: Record<string, unknown>
   if (tool === "stats_report") {
     const range = args.range;
     if (range != null && typeof range !== "string") throw new Error("stats_report.range must be string");
+    const minSources = args.minSources;
+    if (minSources != null && !Number.isFinite(Number(minSources))) {
+      throw new Error("stats_report.minSources must be numeric");
+    }
     return;
   }
   if (tool === "add_source") {
     if (typeof args.name !== "string" || args.name.trim().length === 0) {
       throw new Error("add_source.name is required");
     }
-    if (!["rss", "hn", "x-rsshub", "wechat-wewe"].includes(String(args.kind ?? ""))) {
+  if (!["rss", "hn", "x-rsshub", "x-rsshub-search", "wechat-wewe"].includes(String(args.kind ?? ""))) {
       throw new Error("add_source.kind is invalid");
     }
     if (!args.config || typeof args.config !== "object") {
@@ -185,6 +189,8 @@ async function execTool(tool: AssistantToolName, args: Record<string, unknown>) 
       ? {
           range: String(args.range ?? "7d"),
           minSources: Number(args.minSources ?? 2) || 2,
+          audience: typeof args.audience === "string" ? args.audience : "public",
+          topN: Math.min(Math.max(Number(args.topN ?? 10) || 10, 1), 50),
         }
       : tool === "list_trending_clusters"
         ? {
@@ -234,6 +240,11 @@ async function execTool(tool: AssistantToolName, args: Record<string, unknown>) 
       totals: { items_window: number; clusters_window: number };
       hotspot: { hotspotIndex: number; attentionIndex?: number };
       topClusters: unknown[];
+      consensusClusters?: unknown[];
+      breakingClusters?: unknown[];
+      keywordGroups?: unknown[];
+      trend?: unknown[];
+      byPlatform?: unknown[];
     };
     return {
       range: data.range,
@@ -241,6 +252,11 @@ async function execTool(tool: AssistantToolName, args: Record<string, unknown>) 
       hotspot: data.hotspot,
       attention: data.hotspot,
       topClusters: data.topClusters.slice(0, 5),
+      consensusClusters: (data.consensusClusters ?? []).slice(0, 5),
+      breakingClusters: (data.breakingClusters ?? []).slice(0, 5),
+      keywordGroups: (data.keywordGroups ?? []).slice(0, 10),
+      trend: data.trend ?? [],
+      byPlatform: data.byPlatform ?? [],
     };
   }
   if (tool === "search_items") {

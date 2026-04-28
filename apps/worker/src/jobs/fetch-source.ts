@@ -52,7 +52,7 @@ export async function handleFetchSource(
 
   try {
     const connector = getConnector(
-      source.kind as "rss" | "hn" | "x-rsshub" | "wechat-wewe",
+      source.kind as "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe",
     );
     const ac = new AbortController();
     const timeout = setTimeout(() => ac.abort(), 25_000);

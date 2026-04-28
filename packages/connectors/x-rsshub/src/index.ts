@@ -12,6 +12,12 @@ type XRsshubConfig = {
   handle: string;
 };
 
+type XRsshubSearchConfig = {
+  query: string;
+  lang?: string;
+  description?: string;
+};
+
 type RssItem = {
   guid?: string;
   id?: string;
@@ -41,6 +47,23 @@ function parseConfig(config: unknown): XRsshubConfig {
     throw new Error("x-rsshub config.handle must be a non-empty string");
   }
   return { handle: handle.trim().replace(/^@/, "") };
+}
+
+function parseSearchConfig(config: unknown): XRsshubSearchConfig {
+  if (!config || typeof config !== "object") {
+    throw new Error("x-rsshub-search config must be an object");
+  }
+  const query = (config as Record<string, unknown>).query;
+  if (typeof query !== "string" || query.trim().length === 0) {
+    throw new Error("x-rsshub-search config.query must be a non-empty string");
+  }
+  const lang = (config as Record<string, unknown>).lang;
+  const description = (config as Record<string, unknown>).description;
+  return {
+    query: query.trim(),
+    lang: typeof lang === "string" && lang.trim() ? lang.trim() : undefined,
+    description: typeof description === "string" ? description : undefined,
+  };
 }
 
 function getRsshubBase() {
@@ -147,6 +170,46 @@ export const xRsshubConnector: Connector = {
         throw new Error(`x-rsshub [timeout] fetch timeout (${msg}).`);
       }
       throw new Error(`x-rsshub [network] fetch failed (${msg}).`);
+    }
+    const avatarUrl =
+      typeof feed.image?.url === "string" && feed.image.url.length > 0
+        ? feed.image.url
+        : undefined;
+    return {
+      items: (feed.items ?? []).map(toNormalized),
+      sourceMeta: avatarUrl ? { avatarUrl } : undefined,
+    };
+  },
+};
+
+export const xRsshubSearchConnector: Connector = {
+  kind: "x-rsshub-search",
+  async validateConfig(config: unknown) {
+    parseSearchConfig(config);
+  },
+  async fetch(ctx): Promise<ConnectorFetchResult> {
+    const cfg = parseSearchConfig(ctx.source.config);
+    const parser = new Parser();
+    const query = cfg.lang ? `${cfg.query} lang:${cfg.lang}` : cfg.query;
+    const url = `${getRsshubBase()}/twitter/search/${encodeURIComponent(query)}`;
+    let feed: RssFeed;
+    try {
+      feed = (await parser.parseURL(url)) as RssFeed;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/429|rate.?limit/i.test(msg)) {
+        throw new Error(`x-rsshub-search [rate_limit] fetch failed (${msg}).`);
+      }
+      if (/401|403|auth|forbidden/i.test(msg)) {
+        throw new Error(`x-rsshub-search [auth] fetch failed (${msg}).`);
+      }
+      if (/404|not found/i.test(msg)) {
+        throw new Error(`x-rsshub-search [not_found] route not found; check RSSHUB_BASE path (${msg}).`);
+      }
+      if (/timeout|aborted/i.test(msg)) {
+        throw new Error(`x-rsshub-search [timeout] fetch timeout (${msg}).`);
+      }
+      throw new Error(`x-rsshub-search [network] fetch failed (${msg}).`);
     }
     const avatarUrl =
       typeof feed.image?.url === "string" && feed.image.url.length > 0

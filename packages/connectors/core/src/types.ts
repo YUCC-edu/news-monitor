@@ -1,4 +1,4 @@
-export type ConnectorKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+export type ConnectorKind = "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
 
 export interface FetchContext {
   source: {

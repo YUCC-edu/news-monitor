@@ -72,6 +72,17 @@ const AI_HIGH_SIGNAL: PresetSource[] = [
     initialFetchDays: 3,
     maxItemAgeDays: 90,
   },
+  ...["OpenAI", "Anthropic", "Claude", "GPT-5", "AI agent", "Gemini", "DeepSeek"].map((query) => ({
+    key: `x-search-${query.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+    kind: "x-rsshub-search" as const,
+    name: `X Search: ${query}`,
+    description: `Public X search signal for ${query}.`,
+    config: { query, lang: "en", description: `High-signal X posts mentioning ${query}` },
+    enabled: true,
+    fetchIntervalSec: 600,
+    initialFetchDays: 1,
+    maxItemAgeDays: 30,
+  })),
 ];
 
 const PACKS: Record<string, { name: string; description: string; sources: PresetSource[] }> = {

@@ -1,4 +1,4 @@
-export type SourcePresetKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+export type SourcePresetKind = "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
 export type SourcePresetCategory = "hotspot" | "research";
 
 export type SourcePreset = {

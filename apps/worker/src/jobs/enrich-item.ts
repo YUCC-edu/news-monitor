@@ -11,6 +11,7 @@ import {
 } from "@news/db";
 import { publish } from "../ipc/publish";
 import { assignClusterForEmbedding } from "../pipeline/cluster";
+import { extractFullContent } from "./content-extract";
 
 type EnrichItemJobData = {
   itemId: string;
@@ -36,11 +37,19 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
   }
 
   const itemLog = jobLog.child({ sourceId: item.sourceId });
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 12_000);
+  const extracted = await extractFullContent({
+    url: item.url,
+    fallbackText: item.contentText,
+    signal: ac.signal,
+  }).finally(() => clearTimeout(timeout));
   const output = await translateAndTag({
     title: item.title,
     contentText: item.contentText,
+    fullContentText: extracted.text,
   });
-  const embeddingInput = [item.title ?? "", item.contentText ?? ""].join("\n").trim();
+  const embeddingInput = [item.title ?? "", extracted.text || (item.contentText ?? ""), output.eventSummary ?? ""].join("\n").trim();
   const embedding = await embedText(embeddingInput || item.id);
   const cluster = await assignClusterForEmbedding(embedding, {
     textLength: embeddingInput.length,
@@ -60,6 +69,13 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
     enrichmentSource: aiMode() === "llm" ? "llm" : "rules",
     enrichmentVersion: aiMode() === "llm" ? "llm-v1" : "rules-v1",
     platformMetrics: extractPlatformMetrics(item.raw),
+    fullContentText: extracted.text || undefined,
+    contentSummaryZh: output.contentSummaryZh,
+    contentExtractSource: extracted.source,
+    contentQualityScore: extracted.qualityScore,
+    summaryVersion: output.contentSummaryZh ? (aiMode() === "llm" ? "llm-v1" : "rules-v1") : "none",
+    llmKeywords: output.llmKeywords,
+    eventSummary: output.eventSummary,
     clusterId: cluster.clusterId,
   });
 
@@ -81,6 +97,8 @@ export async function handleEnrichItem(job: Job<EnrichItemJobData>) {
       id: item.id,
       titleZh: output.titleZh,
       contentZh: output.contentZh,
+      contentSummaryZh: output.contentSummaryZh,
+      eventSummary: output.eventSummary,
       tags: output.tags,
       categoryDomain: output.categoryDomain,
       categoryTopic: output.categoryTopic,

@@ -22,7 +22,7 @@ import {
   recommendedCardStyle,
 } from "@/lib/recommended-source-layout";
 
-type SourceKind = "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+type SourceKind = "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
 
 type SourceRow = {
   id: string;
@@ -45,12 +45,14 @@ const KIND_LABEL: Record<SourceKind, string> = {
   rss: "RSS",
   hn: "黑客新闻",
   "x-rsshub": "X（RSSHub）",
+  "x-rsshub-search": "X 搜索",
   "wechat-wewe": "公众号（WeWe-RSS）",
 };
 
 const POOL_LABEL: Record<RecommendedAiSource["sourcePool"], string> = {
   official: "官方发布",
   industry: "行业媒体",
+  "x-signal": "X 信号",
   "hn-popular-blogs-2025": "HN 候选池",
   internal: "内部精选",
   chinese: "中文精选",
@@ -58,6 +60,7 @@ const POOL_LABEL: Record<RecommendedAiSource["sourcePool"], string> = {
 
 const SECTION_LABEL: Record<RecommendedAiSourceSection, string> = {
   "high-signal": "高信号 AI",
+  "x-signal": "X 信号",
   chinese: "中文源",
   industry: "行业新闻",
   official: "官方发布",

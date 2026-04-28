@@ -11,6 +11,8 @@
   listSourceInventory,
   upsertSource,
 } from "@news/db";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { categorizeErrorMessage, classifyRemediation, deriveTaxonomyWithMeta } from "@news/shared";
 import { ZodError } from "zod";
 import {
@@ -42,8 +44,10 @@ export class EngineCapabilityError extends Error {
 }
 
 let publicSeedBootstrapPromise: Promise<void> | null = null;
+const publicSeedDisabledPath = path.resolve(process.cwd(), "data", "public-seed-disabled");
 
 async function ensurePublicSeedBundle() {
+  if (existsSync(publicSeedDisabledPath)) return;
   if (publicSeedBootstrapPromise) return publicSeedBootstrapPromise;
   publicSeedBootstrapPromise = (async () => {
     const existing = await listSourcesWithFilter({ scope: "public_seed" });

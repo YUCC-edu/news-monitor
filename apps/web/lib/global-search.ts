@@ -12,9 +12,9 @@ export type SearchResultRow = {
 
 export const DASH_NAV: Array<{ href: string; label: string; group?: string }> = [
   { href: "/", label: "总编台", group: "总编流" },
+  { href: "/stats", label: "统计", group: "总编流" },
   { href: "/categories", label: "分类", group: "总编流" },
   { href: "/favorites", label: "收藏", group: "总编流" },
-  { href: "/link-saves", label: "博主信源", group: "总编流" },
   { href: "/sources", label: "信源库", group: "信源运营" },
   { href: "/recommended-sources", label: "推荐信源", group: "信源运营" },
   { href: "/creators", label: "博主订阅", group: "信源运营" },
@@ -32,12 +32,12 @@ export const SETTINGS_CATALOG: Array<{
 }> = [
   { key: "DATABASE_URL", title: "数据库", description: "Postgres 连接串", href: "/settings" },
   { key: "REDIS_URL", title: "Redis", description: "队列与流后端", href: "/settings" },
-  { key: "RSSHUB_BASE", title: "RSSHub", description: "X 博主订阅底座", href: "/settings" },
+  { key: "RSSHUB_BASE", title: "RSSHub", description: "X 信号与博主订阅底座", href: "/settings" },
   { key: "WEWE_RSS_BASE", title: "WeWe-RSS", description: "公众号订阅底座", href: "/settings" },
   { key: "WEWE_RSS_AUTH_CODE", title: "WeWe 认证", description: "公众号认证码", href: "/settings" },
   { key: "AI_MODE", title: "AI 模式", description: "core / llm / agent", href: "/settings" },
   { key: "LLM_BASE_URL", title: "LLM 地址", description: "聊天与 embedding API 地址", href: "/settings" },
-  { key: "LLM_CHAT_MODEL", title: "LLM 聊天模型", description: "用于翻译和标注", href: "/settings" },
+  { key: "LLM_CHAT_MODEL", title: "LLM 聊天模型", description: "用于翻译、标注和摘要", href: "/settings" },
   { key: "LLM_EMBEDDING_MODEL", title: "LLM 向量模型", description: "用于增强聚类", href: "/settings" },
   { key: "LLM_CONCURRENCY", title: "LLM 并发", description: "限制增强并发", href: "/settings" },
   { key: "LLM_DAILY_REQUEST_BUDGET", title: "LLM 日预算", description: "限制每日增强请求数", href: "/settings" },

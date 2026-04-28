@@ -37,7 +37,7 @@ export function TrendChart({ data }: { data: TrendPoint[] }) {
           <Line
             type="monotone"
             dataKey="hotspotIndex"
-            name="热点指数"
+            name="关注指数"
             stroke="var(--fg-0)"
             strokeWidth={3}
             dot={false}

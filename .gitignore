@@ -14,7 +14,10 @@ yarn-error.log*
 .DS_Store
 backups/
 docker/.data/
+# Local flag to skip Engine public-seed bootstrap (see packages/engine)
+data/public-seed-disabled
 .turbo/
 .vercel/
 coverage/
 *.tsbuildinfo
+demos/news-monitor-remotion/out/

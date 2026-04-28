@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     });
   }
 
-  const body = (await request.json()) as {
+  const body = (await request.json().catch(() => ({}))) as {
     scope?: "source" | "window" | "item";
     sourceId?: string;
     since?: string;

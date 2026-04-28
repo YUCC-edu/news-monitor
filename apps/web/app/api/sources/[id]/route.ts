@@ -15,7 +15,7 @@ export async function PATCH(request: Request, { params }: Params) {
   const t0 = Date.now();
   const { id } = await params;
   const body = (await request.json()) as {
-    kind: "rss" | "hn" | "x-rsshub" | "wechat-wewe";
+    kind: "rss" | "hn" | "x-rsshub" | "x-rsshub-search" | "wechat-wewe";
     name: string;
     config: unknown;
     scope?: "public_seed" | "personal";

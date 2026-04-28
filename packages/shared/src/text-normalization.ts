@@ -1,5 +1,9 @@
 const NEWS_ALIAS_PATTERNS: Array<[RegExp, string]> = [
   [/\bdeep\s*seek\b/gi, "deepseek"],
+  [/\bgoogle[\s._-]*deepmind\b/gi, "googledeepmind"],
+  [/\bdeep[\s._-]*mind\b/gi, "deepmind"],
+  [/\bmeta[\s._-]*ai\b/gi, "metaai"],
+  [/\bx[\s._-]*ai\b/gi, "xai"],
   [/\bdeepseek[\s._-]*v\s*4\b/gi, "deepseekv4"],
   [/\bdeepseek[\s._-]*r\s*1\b/gi, "deepseekr1"],
   [/深度求索[\s._-]*v\s*4/gi, "deepseekv4"],
@@ -12,11 +16,25 @@ const NEWS_ALIAS_PATTERNS: Array<[RegExp, string]> = [
   [/\bgpt[\s._-]*4(?:\.\d+)?\b/gi, "gpt4"],
   [/\bclaude[\s._-]*4(?:\.\d+)?\b/gi, "claude4"],
   [/\bclaude[\s._-]*(?:sonnet|opus|haiku)?[\s._-]*4(?:\.\d+)?\b/gi, "claude4"],
+  [/\bclaude[\s._-]*code\b/gi, "claudecode"],
   [/\bgemini[\s._-]*2(?:\.\d+)?\b/gi, "gemini2"],
   [/\bqwen[\s._-]*3\b/gi, "qwen3"],
   [/通义千问[\s._-]*3/gi, "qwen3"],
+  [/阿里[\s._-]*通义/gi, "qwen"],
+  [/通义千问/gi, "qwen"],
   [/\bkimi[\s._-]*k\s*2\b/gi, "kimik2"],
+  [/kimi[\s._-]*k\s*2/gi, "kimik2"],
+  [/月之暗面/gi, "moonshotai"],
+  [/智谱[\s._-]*glm/gi, "zhipuglm"],
+  [/智谱/gi, "zhipuai"],
+  [/豆包/gi, "doubao"],
+  [/阶跃星辰/gi, "stepfun"],
+  [/讯飞星火/gi, "sparkdesk"],
+  [/百川智能/gi, "baichuanai"],
   [/\bo[\s._-]*3\b/gi, "o3"],
+  [/\bcursor\b/gi, "cursor"],
+  [/\bcodex\b/gi, "codex"],
+  [/\bsora\b/gi, "sora"],
 ];
 
 const ATTENTION_STOPWORDS = new Set([
@@ -96,6 +114,7 @@ const ATTENTION_STOPWORDS = new Set([
   "events",
   "newsletter",
   "coding",
+  "code",
   "using",
   "guide",
   "intro",
@@ -133,22 +152,36 @@ const ATTENTION_STOPWORDS = new Set([
 
 const PROPER_KEYWORD_DISPLAY = new Map<string, string>([
   ["anthropic", "Anthropic"],
+  ["baichuanai", "百川智能"],
   ["claude4", "Claude-4"],
+  ["claudecode", "Claude Code"],
   ["codex", "Codex"],
+  ["cursor", "Cursor"],
   ["deepseek", "DeepSeek"],
   ["deepseekr1", "DeepSeek-R1"],
   ["deepseekv4", "DeepSeek-V4"],
+  ["deepmind", "DeepMind"],
+  ["doubao", "豆包"],
   ["gemini2", "Gemini-2"],
+  ["googledeepmind", "Google DeepMind"],
   ["gpt4", "GPT-4"],
   ["gpt4o", "GPT-4o"],
   ["gpt55", "GPT-5.5"],
   ["kimik2", "Kimi-K2"],
   ["kimi", "Kimi"],
   ["mistral", "Mistral"],
+  ["metaai", "Meta AI"],
+  ["moonshotai", "月之暗面"],
   ["o3", "o3"],
   ["openai", "OpenAI"],
   ["qwen", "Qwen"],
   ["qwen3", "Qwen3"],
+  ["sora", "Sora"],
+  ["sparkdesk", "讯飞星火"],
+  ["stepfun", "阶跃星辰"],
+  ["xai", "xAI"],
+  ["zhipuai", "智谱"],
+  ["zhipuglm", "智谱GLM"],
 ]);
 
 const PROPER_KEYWORD_KEYS = new Set(PROPER_KEYWORD_DISPLAY.keys());
@@ -220,13 +253,11 @@ export function extractAttentionKeywords(text: string) {
       const phraseTokens = cleanAsciiTokens.slice(i, i + size);
       if (phraseTokens.length !== size) continue;
       const key = toKeywordKey(phraseTokens.join(" "));
-      if (PROPER_KEYWORD_KEYS.has(key) || phraseTokens.some((token) => PROPER_KEYWORD_KEYS.has(token))) {
+      if (PROPER_KEYWORD_KEYS.has(key)) {
         candidates.push(key);
       }
     }
   }
-
-  candidates.push(...(aliasMapped.match(/[\p{Script=Han}]{2,8}/gu) ?? []));
 
   const seen = new Set<string>();
   const keywords: string[] = [];

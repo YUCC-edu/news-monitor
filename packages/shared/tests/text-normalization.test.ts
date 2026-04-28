@@ -60,6 +60,32 @@ describe("news text normalization", () => {
     expect(keywords).not.toContain("agent");
   });
 
+  it("extracts high-value AI product and organization phrases", () => {
+    const keywords = extractAttentionKeywords("Google DeepMind ships Gemini 2 while Claude Code and Cursor gain Codex support");
+    expect(keywords).toContain("Google DeepMind");
+    expect(keywords).toContain("Gemini-2");
+    expect(keywords).toContain("Claude Code");
+    expect(keywords).toContain("Cursor");
+    expect(keywords).toContain("Codex");
+  });
+
+  it("uses curated Chinese aliases instead of generic Chinese chunks", () => {
+    const keywords = extractAttentionKeywords("智谱GLM 发布新模型，多家信源跟进，行业新闻动态");
+    expect(keywords).toContain("智谱GLM");
+    expect(keywords).not.toContain("多家信源跟进");
+    expect(keywords).not.toContain("行业新闻动态");
+  });
+
+  it("does not concatenate adjacent proper nouns into fake keywords", () => {
+    const keywords = extractAttentionKeywords("OpenAI and Anthropic discuss GPT-5.5 and Claude Code");
+    expect(keywords).toContain("OpenAI");
+    expect(keywords).toContain("Anthropic");
+    expect(keywords).toContain("GPT-5.5");
+    expect(keywords).toContain("Claude Code");
+    expect(keywords).not.toContain("openaianthropic");
+    expect(keywords).not.toContain("gpt55claudecode");
+  });
+
   it("keeps readable display names for canonical keyword keys", () => {
     expect(displayAttentionKeyword("deepseekv4")).toBe("DeepSeek-V4");
     expect(displayAttentionKeyword("gpt55")).toBe("GPT-5.5");
