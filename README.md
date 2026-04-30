@@ -1,16 +1,49 @@
 # news-monitor
 
-`news-monitor` 是一个可自托管的多信源“值得关注”发现引擎。它会抓取你配置的 RSS、平台订阅和推荐信源，汇总内容里的关键词、事件组和多源覆盖信号，帮助你发现当前真正值得关注的 AI / 科技动态。
+自托管的多信源“值得关注”发现引擎。它会抓取 RSS、公众号、Hacker News、X/RSSHub 和推荐信源，把内容归并成事件、关键词和跨来源覆盖信号，帮助你持续发现真正值得关注的 AI / 科技动态。
 
-这个项目当前的主入口是 Web 控制台。Agent / HTTP / CLI 能力会继续保留为高级能力，但不作为新用户的第一启动路径。
+当前主入口是 Web 控制台；CLI、HTTP API 和 Agent 能力保留为诊断与集成入口。
 
-## 你需要先安装
+## 界面预览
+
+### 总编台
+
+![总编台](docs/assets/overview.png)
+
+### 推荐信源
+
+![推荐信源](docs/assets/recommended-sources.png)
+
+### 来源覆盖
+
+![来源覆盖](docs/assets/stats.png)
+
+### 一键启动
+
+![一键启动](docs/assets/quick-start.png)
+
+### Demo 视频
+
+[观看 demo 视频](docs/assets/news-monitor-demo.mp4)
+
+视频源码在 [demos/news-monitor-remotion](demos/news-monitor-remotion)，可用 Remotion 重新渲染。
+
+## 核心能力
+
+- 多信源采集：RSS、HN、X/RSSHub、WeWe-RSS、预设推荐源。
+- 事件聚类：按主题、关键词、来源覆盖和时间窗口合并相近内容。
+- 可解释排序：展示来源数量、平台覆盖、热度变化和“为什么值得关注”。
+- Core 模式可离线运行：默认 `AI_MODE=core`，不依赖 LLM Key。
+- LLM 可选增强：用于摘要、中文标题、标签、聚类命名和解释。
+- 本地诊断：队列、AI 状态、抓取失败、数据质量巡检都有脚本入口。
+
+## 环境要求
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - [Node.js 22 LTS](https://nodejs.org/)
-- Windows 用户建议使用 PowerShell 7 或系统自带 PowerShell
+- Windows 建议使用 PowerShell 7 或系统自带 PowerShell
 
-安装完成后，打开 Docker Desktop，并等待 Docker Engine 处于运行状态。
+启动前先打开 Docker Desktop，并确认 Docker Engine 已运行。
 
 ## Windows 一键启动
 
@@ -20,27 +53,25 @@
 start-dev.cmd
 ```
 
-它会自动执行：
+脚本会自动完成：
 
 - 检查 Node、Corepack、Docker
-- 根据 `.env.example` 创建 `.env`
-- 安装依赖
-- 启动 Docker 依赖：Postgres、Redis、RSSHub、WeWe-RSS
+- 从 `.env.example` 创建 `.env`
+- 安装 pnpm 依赖
+- 启动 Postgres、Redis、RSSHub、WeWe-RSS
 - 执行数据库迁移
-- 启动本地 Web 和 worker
-- 打开浏览器访问 [http://localhost:3000](http://localhost:3000)
+- 启动 Web 和 worker
+- 打开 [http://localhost:3000](http://localhost:3000)
 
-日常使用这三个文件即可：
+日常脚本：
 
 ```text
-start-dev.cmd                 启动完整本地开发环境
-restart-web-worker.cmd        只重启 Web 和 worker
-stop-dev.cmd                  停止 Web、worker 和 Docker 依赖
+start-dev.cmd              启动完整本地开发环境
+restart-web-worker.cmd     只重启 Web 和 worker
+stop-dev.cmd               停止 Web、worker 和 Docker 依赖
 ```
 
-## 终端启动
-
-如果你更习惯命令行，在 PowerShell 中运行：
+## 命令行启动
 
 ```powershell
 corepack pnpm install
@@ -66,24 +97,17 @@ corepack pnpm stop:dev
 corepack pnpm restart:dev
 ```
 
-## 第一次进入 Web 后做什么
+## 首次使用流程
 
-1. 打开 `总编台`，确认页面能加载。
-2. 进入 `信源库`。
-3. 在推荐信源中选择一批高质量源，或者手动添加 RSS / 平台源。
-4. 等待 worker 抓取和处理内容。
-5. 回到 `总编台` 查看：
-  - `正在升温`
-  - `已被确认`
-  - `我的订阅`
+1. 打开 `总编台`，确认页面可以加载。
+2. 进入 `推荐信源`，导入一批公共高质量源。
+3. 进入 `信源库`，按需要补充个人 RSS、公众号或 X/RSSHub 源。
+4. 等待 worker 抓取、抽取关键词、聚类和排序。
+5. 回到 `总编台` 查看 `正在升温`、`已被确认` 和 `我的订阅`。
 
-默认模式是 `AI_MODE=core`，不需要 LLM API Key 也能运行。LLM 只作为可选增强。
+## 配置
 
-## 配置文件
-
-第一次启动时会从 `.env.example` 复制出 `.env`。
-
-最小本地配置已经给好默认值：
+首次启动会从 `.env.example` 复制 `.env`。本地最小配置：
 
 ```env
 DATABASE_URL=postgres://news:news@127.0.0.1:55432/news
@@ -93,7 +117,7 @@ WEWE_RSS_BASE=http://127.0.0.1:4000
 AI_MODE=core
 ```
 
-如果要使用 LLM 增强，再把 `.env` 改成：
+启用 LLM 增强时再补充：
 
 ```env
 AI_MODE=llm
@@ -103,111 +127,92 @@ LLM_CHAT_MODEL=your-chat-model
 LLM_EMBEDDING_MODEL=your-embedding-model
 ```
 
-不要把 `.env`、`.env.local`、`.env.backup.*` 提交到 GitHub。
+不要提交 `.env`、`.env.local`、`.env.backup.*` 或任何真实密钥。
 
-## 常用诊断命令
-
-CLI 目前只建议作为本地诊断工具使用：
+## 常用诊断
 
 ```powershell
 corepack pnpm nm -- status
 corepack pnpm nm -- ai status --json
 corepack pnpm nm -- queue status --json
-```
-
-查看队列失败详情：
-
-```powershell
 corepack pnpm queue:inspect
-```
-
-重试抓取失败任务：
-
-```powershell
 corepack pnpm queue:retry-fetch
+corepack pnpm queue:retry-enrich
+corepack pnpm quality:eval -- --days 7
 ```
 
-## 常见问题
+## CI 与发布检查
 
-### Docker 提示连接失败
-
-先启动 Docker Desktop，等它显示 Docker Engine 正常运行，再重新执行 `start-dev.cmd`。
-
-### Corepack / pnpm 启动失败
-
-先确认 Node.js 版本是 22：
-
-```powershell
-node -v
-```
-
-如果 Corepack 无法启动 pnpm，可以运行：
-
-```powershell
-corepack prepare pnpm@9.12.0 --activate
-```
-
-然后重新运行 `start-dev.cmd`。
-
-### 页面打不开
-
-确认 `http://localhost:3000` 没有被其他程序占用。也可以先执行：
-
-```powershell
-.\stop-dev.cmd
-.\start-dev.cmd
-```
-
-### 队列里 `fetch-source` 显示 200
-
-这个数字通常表示队列保留的失败任务数量上限，不一定等于当前正在失败的任务数量。用下面命令看具体失败原因：
-
-```powershell
-corepack pnpm queue:inspect
-```
-
-### 没有 LLM Key 能不能用
-
-可以。默认 `AI_MODE=core`，项目会用规则、关键词、聚类和多源覆盖信号运行。LLM 只是摘要、命名、解释等增强能力。
-
-## 详细启动文档
-
-如果你是第一次部署，或者启动失败，先看：
-
-- [docs/getting-started.md](docs/getting-started.md)
-
-高级 Agent / HTTP 集成文档暂时放在：
-
-- [docs/agent-integration/README.md](docs/agent-integration/README.md)
-
-它不是当前新用户的主入口。
-
-## 发布到 GitHub 前检查
-
-在推送仓库前运行：
+GitHub Actions 使用 [.github/workflows/ci.yml](.github/workflows/ci.yml)，核心命令是：
 
 ```powershell
 corepack pnpm check
 ```
 
-并确认：
+推送前建议确认：
 
-- `.env` 没有出现在 `git status`
-- `.env.backup.*` 没有出现在 `git status`
-- `.env.example` 不包含真实密钥
-- `README.md` 和 `.env.example` 没有乱码
-- 双击 `start-dev.cmd` 可以跑通首启
+- `corepack pnpm check` 本地通过。
+- `.env` 和 `.env.backup.*` 没有出现在 `git status`。
+- `.env.example` 不包含真实密钥。
+- README、截图和 demo 视频路径可访问。
+- Docker Desktop 启动后，`start-dev.cmd` 能完成首启。
+
+## 常见问题
+
+### Docker 连接失败
+
+先启动 Docker Desktop，等 Docker Engine 正常运行，再重新执行 `start-dev.cmd`。
+
+### Corepack / pnpm 启动失败
+
+确认 Node.js 是 22：
+
+```powershell
+node -v
+```
+
+必要时激活 pnpm：
+
+```powershell
+corepack prepare pnpm@9.12.0 --activate
+```
+
+### 页面 API 报数据库字段不存在
+
+通常是本地数据库 schema 旧于当前代码。启动 Docker 后执行：
+
+```powershell
+corepack pnpm --filter @news/db migrate
+```
+
+然后重启 Web 和 worker：
+
+```powershell
+corepack pnpm restart:dev
+```
+
+### 没有 LLM Key 能不能用
+
+可以。默认 `AI_MODE=core`，抓取、关键词、聚类和排序都能运行；LLM 只是增强能力。
 
 ## 项目结构
 
 ```text
-apps/web              Web 控制台与 HTTP API
-apps/worker           队列消费、抓取、增强、聚类
-packages/db           Drizzle schema、迁移、查询
-packages/engine       能力层与业务编排
-packages/shared       共享类型、文本归一化、关键词规则
-docker/               本地依赖服务
-docs/                 启动文档、runbook、设计文档
-scripts/              启动脚本、诊断脚本、CLI
+apps/web                 Web 控制台与 HTTP API
+apps/worker              队列消费、抓取、增强、聚类
+packages/db              Drizzle schema、迁移、查询
+packages/engine          能力层与业务编排
+packages/connectors/*    RSS、HN、WeWe、X/RSSHub 等连接器
+packages/shared          共享类型、日志、环境与文本工具
+scripts/                 启动、诊断、队列与质量巡检脚本
+docker/                  本地依赖服务与容器镜像
+docs/                    启动文档、runbook、设计与状态文档
+demos/news-monitor-remotion  README demo 视频工程
 ```
 
+## 更多文档
+
+- [快速开始](docs/getting-started.md)
+- [Agent / HTTP 集成](docs/agent-integration/README.md)
+- [队列失败处理](docs/runbooks/queue-failed-jobs.md)
+- [聚类质量巡检](docs/runbooks/cluster-taxonomy-quality-loop.md)
