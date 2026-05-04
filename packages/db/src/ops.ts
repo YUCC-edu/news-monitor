@@ -11,8 +11,14 @@ import {
   itemEnrichments,
   items,
   keywordRules,
+  publishAttempts,
+  publishTargets,
+  reportRuns,
+  reports,
   sources,
   userLinks,
+  writingStyleProfiles,
+  writingStyleSamples,
 } from "./schema";
 
 export type { SourceKind };
@@ -881,7 +887,7 @@ export type ClusterSiblingRow = {
   sourceConfig: unknown;
 };
 
-/** Recent items in a cluster (for 鈥滃叾瀹冩潵婧愨€?UI). */
+/** Recent items in a cluster for the "other sources" UI. */
 export async function listClusterSiblingItems(params: {
   clusterId: string;
   excludeItemId?: string;
@@ -1087,6 +1093,417 @@ export async function logAssistantAction(input: {
   return rows[0] ?? null;
 }
 
+export type ReportStatus = "draft" | "published" | "partial" | "failed";
+export type PublishTargetKind = "wechat" | "feishu" | "obsidian";
+export type PublishAttemptStatus = "running" | "ok" | "error" | "skipped";
+
+export type ReportPayloadInput = {
+  reportDate: string;
+  title: string;
+  audience: "public" | "personal";
+  range: "24h" | "72h" | "7d" | "30d" | "90d";
+  topN: number;
+  minSources: number;
+  draft: unknown;
+  markdown: string;
+  wechatHtml: string;
+  feishuPayload: unknown;
+  obsidianMarkdown: string;
+  status?: ReportStatus;
+};
+
+export async function upsertReport(input: ReportPayloadInput) {
+  const db = getDb();
+  const now = new Date();
+  const rows = await db
+    .insert(reports)
+    .values({
+      reportDate: input.reportDate,
+      title: input.title,
+      audience: input.audience,
+      range: input.range,
+      topN: input.topN,
+      minSources: input.minSources,
+      status: input.status ?? "draft",
+      draft: input.draft,
+      markdown: input.markdown,
+      wechatHtml: input.wechatHtml,
+      feishuPayload: input.feishuPayload,
+      obsidianMarkdown: input.obsidianMarkdown,
+      edited: false,
+      generatedAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [reports.reportDate, reports.audience, reports.range],
+      set: {
+        title: input.title,
+        topN: input.topN,
+        minSources: input.minSources,
+        status: input.status ?? "draft",
+        draft: input.draft,
+        markdown: input.markdown,
+        wechatHtml: input.wechatHtml,
+        feishuPayload: input.feishuPayload,
+        obsidianMarkdown: input.obsidianMarkdown,
+        edited: false,
+        generatedAt: now,
+        updatedAt: now,
+      },
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function listReports(limit = 30) {
+  const db = getDb();
+  const reportRows = await db
+    .select()
+    .from(reports)
+    .orderBy(desc(reports.reportDate), desc(reports.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 200));
+  if (reportRows.length === 0) return [];
+  const ids = reportRows.map((row) => row.id);
+  const attempts = await db
+    .select()
+    .from(publishAttempts)
+    .where(inArray(publishAttempts.reportId, ids))
+    .orderBy(desc(publishAttempts.createdAt));
+  const byReport = new Map<string, typeof attempts>();
+  for (const attempt of attempts) {
+    const bucket = byReport.get(attempt.reportId) ?? [];
+    bucket.push(attempt);
+    byReport.set(attempt.reportId, bucket);
+  }
+  return reportRows.map((report) => ({
+    ...report,
+    attempts: byReport.get(report.id) ?? [],
+  }));
+}
+
+export async function getReportWithAttempts(id: string) {
+  const db = getDb();
+  const report = await db.query.reports.findFirst({
+    where: eq(reports.id, id),
+  });
+  if (!report) return null;
+  const attempts = await db
+    .select()
+    .from(publishAttempts)
+    .where(eq(publishAttempts.reportId, id))
+    .orderBy(desc(publishAttempts.createdAt));
+  return { ...report, attempts };
+}
+
+export async function updateReportContent(input: {
+  id: string;
+  title?: string;
+  markdown?: string;
+  wechatHtml?: string;
+  obsidianMarkdown?: string;
+  feishuPayload?: unknown;
+  styledTitle?: string | null;
+  styledMarkdown?: string | null;
+  styledWechatHtml?: string | null;
+  styleImageBriefs?: unknown;
+  status?: ReportStatus;
+}) {
+  const db = getDb();
+  const rows = await db
+    .update(reports)
+    .set({
+      ...(input.title != null ? { title: input.title } : {}),
+      ...(input.markdown != null ? { markdown: input.markdown } : {}),
+      ...(input.wechatHtml != null ? { wechatHtml: input.wechatHtml } : {}),
+      ...(input.obsidianMarkdown != null ? { obsidianMarkdown: input.obsidianMarkdown } : {}),
+      ...(input.feishuPayload != null ? { feishuPayload: input.feishuPayload } : {}),
+      ...(input.styledTitle !== undefined ? { styledTitle: input.styledTitle } : {}),
+      ...(input.styledMarkdown !== undefined ? { styledMarkdown: input.styledMarkdown } : {}),
+      ...(input.styledWechatHtml !== undefined ? { styledWechatHtml: input.styledWechatHtml } : {}),
+      ...(input.styleImageBriefs !== undefined ? { styleImageBriefs: input.styleImageBriefs } : {}),
+      ...(input.status != null ? { status: input.status } : {}),
+      edited: true,
+      updatedAt: new Date(),
+    })
+    .where(eq(reports.id, input.id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export type ReportStyledContentInput = {
+  id: string;
+  styleProfileId?: string | null;
+  styledTitle: string;
+  styledMarkdown: string;
+  styledWechatHtml: string;
+  styleImageBriefs?: unknown;
+};
+
+export async function setReportStyledContent(input: ReportStyledContentInput) {
+  const db = getDb();
+  const now = new Date();
+  const rows = await db
+    .update(reports)
+    .set({
+      styleProfileId: input.styleProfileId ?? null,
+      styledTitle: input.styledTitle,
+      styledMarkdown: input.styledMarkdown,
+      styledWechatHtml: input.styledWechatHtml,
+      styleImageBriefs: input.styleImageBriefs ?? [],
+      styledAt: now,
+      updatedAt: now,
+    })
+    .where(eq(reports.id, input.id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function setReportStatus(id: string, status: ReportStatus) {
+  const db = getDb();
+  const rows = await db
+    .update(reports)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(reports.id, id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export type WritingStyleProfileUpdateInput = {
+  id?: string;
+  name?: string;
+  description?: string | null;
+  rules?: unknown;
+  status?: "active" | "archived";
+};
+
+export type WritingStyleSampleCreateInput = {
+  profileId?: string | null;
+  title: string;
+  sourceUrl?: string | null;
+  contentMarkdown: string;
+  wechatHtml?: string | null;
+  coverImageUrl?: string | null;
+  inlineImages?: unknown;
+  imageNotes?: string | null;
+  extracted?: unknown;
+};
+
+export async function ensureDefaultWritingStyleProfile() {
+  const db = getDb();
+  const existing = await db.query.writingStyleProfiles.findFirst({
+    where: eq(writingStyleProfiles.status, "active"),
+    orderBy: [desc(writingStyleProfiles.updatedAt)],
+  });
+  if (existing) return existing;
+  const rows = await db
+    .insert(writingStyleProfiles)
+    .values({
+      name: "Default WeChat Style",
+      description: "Imported WeChat article style profile",
+      status: "active",
+      rules: {},
+      sampleCount: 0,
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function getActiveWritingStyleProfile(profileId?: string | null) {
+  const db = getDb();
+  if (profileId) {
+    return db.query.writingStyleProfiles.findFirst({
+      where: eq(writingStyleProfiles.id, profileId),
+    });
+  }
+  const existing = await db.query.writingStyleProfiles.findFirst({
+    where: eq(writingStyleProfiles.status, "active"),
+    orderBy: [desc(writingStyleProfiles.updatedAt)],
+  });
+  return existing ?? ensureDefaultWritingStyleProfile();
+}
+
+export async function updateWritingStyleProfile(input: WritingStyleProfileUpdateInput) {
+  const profile = input.id
+    ? await getActiveWritingStyleProfile(input.id)
+    : await ensureDefaultWritingStyleProfile();
+  if (!profile) return null;
+  const db = getDb();
+  const rows = await db
+    .update(writingStyleProfiles)
+    .set({
+      ...(input.name != null ? { name: input.name } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.rules !== undefined ? { rules: input.rules } : {}),
+      ...(input.status != null ? { status: input.status } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(writingStyleProfiles.id, profile.id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function refreshWritingStyleProfileFromSamples(
+  profileId: string,
+  rules: unknown,
+  sampleCount: number,
+) {
+  const db = getDb();
+  const rows = await db
+    .update(writingStyleProfiles)
+    .set({
+      rules,
+      sampleCount,
+      updatedAt: new Date(),
+    })
+    .where(eq(writingStyleProfiles.id, profileId))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function createWritingStyleSample(input: WritingStyleSampleCreateInput) {
+  const profile = input.profileId
+    ? await getActiveWritingStyleProfile(input.profileId)
+    : await ensureDefaultWritingStyleProfile();
+  if (!profile) return null;
+  const db = getDb();
+  const rows = await db
+    .insert(writingStyleSamples)
+    .values({
+      profileId: profile.id,
+      title: input.title,
+      sourceUrl: input.sourceUrl ?? null,
+      contentMarkdown: input.contentMarkdown,
+      wechatHtml: input.wechatHtml ?? null,
+      coverImageUrl: input.coverImageUrl ?? null,
+      inlineImages: input.inlineImages ?? [],
+      imageNotes: input.imageNotes ?? null,
+      extracted: input.extracted ?? {},
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function listWritingStyleSamples(limit = 30, profileId?: string | null) {
+  const db = getDb();
+  const lim = Math.min(Math.max(limit, 1), 200);
+  return db
+    .select()
+    .from(writingStyleSamples)
+    .where(profileId ? eq(writingStyleSamples.profileId, profileId) : undefined)
+    .orderBy(desc(writingStyleSamples.createdAt))
+    .limit(lim);
+}
+
+export async function createReportRun(input: {
+  trigger: string;
+  params: unknown;
+}) {
+  const db = getDb();
+  const rows = await db
+    .insert(reportRuns)
+    .values({
+      trigger: input.trigger,
+      params: input.params,
+      status: "running",
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function finishReportRun(input: {
+  id: string;
+  reportId?: string | null;
+  status: "ok" | "error";
+  errorMessage?: string | null;
+}) {
+  const db = getDb();
+  const rows = await db
+    .update(reportRuns)
+    .set({
+      reportId: input.reportId ?? null,
+      status: input.status,
+      errorMessage: input.errorMessage ?? null,
+      finishedAt: new Date(),
+    })
+    .where(eq(reportRuns.id, input.id))
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function ensurePublishTargets() {
+  const db = getDb();
+  const kinds: PublishTargetKind[] = ["wechat", "feishu", "obsidian"];
+  await Promise.all(
+    kinds.map((kind) =>
+      db
+        .insert(publishTargets)
+        .values({ kind, enabled: true, config: {} })
+        .onConflictDoNothing({ target: publishTargets.kind }),
+    ),
+  );
+  return listPublishTargets();
+}
+
+export async function listPublishTargets(enabledOnly = false) {
+  const db = getDb();
+  return db
+    .select()
+    .from(publishTargets)
+    .where(enabledOnly ? eq(publishTargets.enabled, true) : undefined)
+    .orderBy(asc(publishTargets.kind));
+}
+
+export async function getPublishAttempt(id: string) {
+  const db = getDb();
+  return db.query.publishAttempts.findFirst({
+    where: eq(publishAttempts.id, id),
+  });
+}
+
+export async function createPublishAttempt(input: {
+  reportId: string;
+  targetId?: string | null;
+  targetKind: PublishTargetKind;
+  trigger: string;
+}) {
+  const db = getDb();
+  const rows = await db
+    .insert(publishAttempts)
+    .values({
+      reportId: input.reportId,
+      targetId: input.targetId ?? null,
+      targetKind: input.targetKind,
+      trigger: input.trigger,
+      status: "running",
+    })
+    .returning();
+  return rows[0] ?? null;
+}
+
+export async function finishPublishAttempt(input: {
+  id: string;
+  status: PublishAttemptStatus;
+  externalId?: string | null;
+  externalUrl?: string | null;
+  output?: unknown;
+  errorMessage?: string | null;
+}) {
+  const db = getDb();
+  const rows = await db
+    .update(publishAttempts)
+    .set({
+      status: input.status,
+      externalId: input.externalId ?? null,
+      externalUrl: input.externalUrl ?? null,
+      output: input.output ?? {},
+      errorMessage: input.errorMessage ?? null,
+      finishedAt: new Date(),
+    })
+    .where(eq(publishAttempts.id, input.id))
+    .returning();
+  return rows[0] ?? null;
+}
+
 export async function listAssistantActions(limit = 100) {
   const db = getDb();
   return db
@@ -1108,6 +1525,8 @@ export type ItemListRow = {
   contentText: string | null;
   titleZh: string | null;
   contentZh: string | null;
+  contentSummaryZh: string | null;
+  eventSummary: string | null;
   tags: string[] | null;
   categoryDomain: string[] | null;
   categoryTopic: string[] | null;
@@ -1187,6 +1606,8 @@ async function listCuratedItems(params: {
     content_text: string | null;
     title_zh: string | null;
     content_zh: string | null;
+    content_summary_zh: string | null;
+    event_summary: string | null;
     tags: string[] | null;
     category_domain: string[] | null;
     category_topic: string[] | null;
@@ -1246,6 +1667,8 @@ async function listCuratedItems(params: {
       items.content_text,
       ie.title_zh,
       ie.content_zh,
+      ie.content_summary_zh,
+      ie.event_summary,
       ie.tags,
       ie.category_domain,
       ie.category_topic,
@@ -1291,6 +1714,8 @@ async function listCuratedItems(params: {
     contentText: r.content_text,
     titleZh: r.title_zh,
     contentZh: r.content_zh,
+    contentSummaryZh: r.content_summary_zh,
+    eventSummary: r.event_summary,
     tags: r.tags,
     categoryDomain: r.category_domain,
     categoryTopic: r.category_topic,

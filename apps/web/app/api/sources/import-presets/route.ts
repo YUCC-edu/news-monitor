@@ -1,27 +1,16 @@
 ﻿import { upsertSource } from "@news/db";
 import { createLogger } from "@news/shared";
-import Redis from "ioredis";
 import { NextResponse } from "next/server";
 import { enqueueFetchSource } from "@/lib/fetch-source-queue";
+import { publishSourceChanged } from "@/lib/redis-publish";
 import { collectPresetItems, listPresetPacks } from "@/lib/source-presets";
 
-let publishRedis: Redis | null = null;
 const log = createLogger("api:sources:import-presets");
 
 function getHomepageUrl(item: unknown) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
   const homepageUrl = (item as Record<string, unknown>).homepageUrl;
   return typeof homepageUrl === "string" && homepageUrl.trim() ? homepageUrl.trim() : undefined;
-}
-
-function getPublishRedis() {
-  if (!publishRedis) {
-    publishRedis = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
-      maxRetriesPerRequest: null,
-      lazyConnect: true,
-    });
-  }
-  return publishRedis;
 }
 
 export async function POST(request: Request) {
@@ -99,10 +88,7 @@ export async function POST(request: Request) {
 
   try {
     if (created.length > 0) {
-      await getPublishRedis().publish(
-        "sources.changed",
-        JSON.stringify({ op: "preset-import", presetKey, createdCount: created.length }),
-      );
+      await publishSourceChanged({ op: "preset-import", presetKey, createdCount: created.length });
     }
   } catch (e) {
     log.warn("preset import redis publish failed", { presetKey, error: e });

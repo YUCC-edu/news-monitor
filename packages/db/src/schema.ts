@@ -234,6 +234,166 @@ export const assistantActions = pgTable(
   }),
 );
 
+export const writingStyleProfiles = pgTable(
+  "writing_style_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    description: text("description"),
+    status: text("status").notNull().default("active"),
+    rules: jsonb("rules").notNull().default(sql`'{}'::jsonb`),
+    sampleCount: integer("sample_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    statusIdx: index("writing_style_profiles_status_idx").on(t.status),
+    updatedIdx: index("writing_style_profiles_updated_idx").on(t.updatedAt),
+  }),
+);
+
+export const writingStyleSamples = pgTable(
+  "writing_style_samples",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    profileId: uuid("profile_id")
+      .notNull()
+      .references(() => writingStyleProfiles.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    sourceUrl: text("source_url"),
+    contentMarkdown: text("content_markdown").notNull(),
+    wechatHtml: text("wechat_html"),
+    coverImageUrl: text("cover_image_url"),
+    inlineImages: jsonb("inline_images").notNull().default(sql`'[]'::jsonb`),
+    imageNotes: text("image_notes"),
+    extracted: jsonb("extracted").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    profileIdx: index("writing_style_samples_profile_idx").on(t.profileId),
+    createdIdx: index("writing_style_samples_created_idx").on(t.createdAt),
+  }),
+);
+
+export const reports = pgTable(
+  "reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportDate: text("report_date").notNull(),
+    title: text("title").notNull(),
+    audience: text("audience").notNull().default("personal"),
+    range: text("range").notNull().default("24h"),
+    topN: integer("top_n").notNull().default(10),
+    minSources: integer("min_sources").notNull().default(1),
+    status: text("status").notNull().default("draft"),
+    draft: jsonb("draft").notNull().default(sql`'{}'::jsonb`),
+    markdown: text("markdown").notNull(),
+    wechatHtml: text("wechat_html").notNull(),
+    feishuPayload: jsonb("feishu_payload").notNull().default(sql`'{}'::jsonb`),
+    obsidianMarkdown: text("obsidian_markdown").notNull(),
+    styleProfileId: uuid("style_profile_id").references(() => writingStyleProfiles.id, { onDelete: "set null" }),
+    styledTitle: text("styled_title"),
+    styledMarkdown: text("styled_markdown"),
+    styledWechatHtml: text("styled_wechat_html"),
+    styleImageBriefs: jsonb("style_image_briefs").notNull().default(sql`'[]'::jsonb`),
+    styledAt: timestamp("styled_at", { withTimezone: true }),
+    edited: boolean("edited").notNull().default(false),
+    generatedAt: timestamp("generated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    uniqDaily: unique("reports_daily_unique").on(t.reportDate, t.audience, t.range),
+    createdIdx: index("reports_created_idx").on(t.createdAt),
+    dateIdx: index("reports_date_idx").on(t.reportDate),
+    statusIdx: index("reports_status_idx").on(t.status),
+    styleProfileIdx: index("reports_style_profile_idx").on(t.styleProfileId),
+  }),
+);
+
+export const reportRuns = pgTable(
+  "report_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportId: uuid("report_id").references(() => reports.id, { onDelete: "set null" }),
+    trigger: text("trigger").notNull().default("manual"),
+    status: text("status").notNull().default("running"),
+    params: jsonb("params").notNull().default(sql`'{}'::jsonb`),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+  },
+  (t) => ({
+    reportIdx: index("report_runs_report_idx").on(t.reportId),
+    startedIdx: index("report_runs_started_idx").on(t.startedAt),
+    statusIdx: index("report_runs_status_idx").on(t.status),
+  }),
+);
+
+export const publishTargets = pgTable(
+  "publish_targets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    kind: text("kind").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    kindUnique: unique("publish_targets_kind_unique").on(t.kind),
+    enabledIdx: index("publish_targets_enabled_idx").on(t.enabled),
+  }),
+);
+
+export const publishAttempts = pgTable(
+  "publish_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    reportId: uuid("report_id")
+      .notNull()
+      .references(() => reports.id, { onDelete: "cascade" }),
+    targetId: uuid("target_id").references(() => publishTargets.id, { onDelete: "set null" }),
+    targetKind: text("target_kind").notNull(),
+    trigger: text("trigger").notNull().default("manual"),
+    status: text("status").notNull().default("running"),
+    externalId: text("external_id"),
+    externalUrl: text("external_url"),
+    output: jsonb("output").notNull().default(sql`'{}'::jsonb`),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    reportIdx: index("publish_attempts_report_idx").on(t.reportId),
+    targetIdx: index("publish_attempts_target_idx").on(t.targetKind),
+    statusIdx: index("publish_attempts_status_idx").on(t.status),
+    createdIdx: index("publish_attempts_created_idx").on(t.createdAt),
+  }),
+);
+
 export type Source = typeof sources.$inferSelect;
 export type NewSource = typeof sources.$inferInsert;
 export type SourceScope = "public_seed" | "personal";
@@ -242,3 +402,10 @@ export type NewItem = typeof items.$inferInsert;
 export type Cluster = typeof clusters.$inferSelect;
 export type ItemEnrichment = typeof itemEnrichments.$inferSelect;
 export type AssistantAction = typeof assistantActions.$inferSelect;
+export type Report = typeof reports.$inferSelect;
+export type NewReport = typeof reports.$inferInsert;
+export type ReportRun = typeof reportRuns.$inferSelect;
+export type PublishTarget = typeof publishTargets.$inferSelect;
+export type PublishAttempt = typeof publishAttempts.$inferSelect;
+export type WritingStyleProfile = typeof writingStyleProfiles.$inferSelect;
+export type WritingStyleSample = typeof writingStyleSamples.$inferSelect;

@@ -14,6 +14,7 @@
     "dev:worker": "pnpm --filter @news/worker dev",
     "nm": "tsx --env-file=.env scripts/nm-cli.ts",
     "start:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "start:app": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -DockerApp",
     "start:docker": "powershell -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -DockerApp",
     "restart:dev": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-web-worker.ps1",
     "restart:web-worker": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-web-worker.ps1",
@@ -27,7 +28,9 @@
     "queue:inspect": "tsx --env-file=.env scripts/inspect-queue-failures.ts",
     "queue:retry-fetch": "tsx --env-file=.env scripts/retry-fetch-failed.ts",
     "queue:retry-enrich": "tsx --env-file=.env scripts/retry-enrich-failed.ts",
-    "quality:eval": "tsx --env-file=.env scripts/evaluate-cluster-quality.ts"
+    "quality:eval": "tsx --env-file=.env scripts/evaluate-cluster-quality.ts",
+    "doctor": "powershell -ExecutionPolicy Bypass -File ./scripts/doctor.ps1",
+    "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1"
   },
   "devDependencies": {
     "@news/engine": "workspace:*",

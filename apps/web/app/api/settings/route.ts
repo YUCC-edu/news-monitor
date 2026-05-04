@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -17,9 +17,17 @@ const ENV_KEYS = [
   "LLM_EMBEDDING_MODEL",
   "LLM_CONCURRENCY",
   "LLM_DAILY_REQUEST_BUDGET",
+  "WECHAT_MP_APP_ID",
+  "WECHAT_MP_APP_SECRET",
+  "WECHAT_MP_DEFAULT_THUMB_MEDIA_ID",
+  "FEISHU_WEBHOOK_URL",
+  "FEISHU_WEBHOOK_SECRET",
+  "OBSIDIAN_VAULT_PATH",
+  "REPORT_DAILY_TIME",
+  "REPORT_TIMEZONE",
 ] as const;
 
-const URL_KEYS = new Set(["DATABASE_URL", "REDIS_URL", "RSSHUB_BASE", "WEWE_RSS_BASE", "LLM_BASE_URL"]);
+const URL_KEYS = new Set(["DATABASE_URL", "REDIS_URL", "RSSHUB_BASE", "WEWE_RSS_BASE", "LLM_BASE_URL", "FEISHU_WEBHOOK_URL"]);
 
 type ParsedLine =
   | { type: "raw"; raw: string }
@@ -28,7 +36,7 @@ type ParsedLine =
 const ENV_PATH = path.resolve(process.cwd(), "..", "..", ".env");
 const log = createLogger("api:settings");
 
-/** WeWe 前端会把 AUTH 放进 fetch Headers；非 ISO-8859-1 字符会整页报错。仅保留可打印 ASCII。 */
+/** WeWe forwards AUTH through fetch headers; keep only printable ASCII to avoid invalid header bytes. */
 function sanitizeWeWeAuthCode(raw: string) {
   return raw.replace(/\uFEFF/g, "").replace(/[^\x20-\x7E]/g, "").trim();
 }
@@ -141,10 +149,18 @@ export async function GET() {
       LLM_EMBEDDING_MODEL: map.get("LLM_EMBEDDING_MODEL") ?? "",
       LLM_CONCURRENCY: map.get("LLM_CONCURRENCY") ?? "2",
       LLM_DAILY_REQUEST_BUDGET: map.get("LLM_DAILY_REQUEST_BUDGET") ?? "500",
+      WECHAT_MP_APP_ID: map.get("WECHAT_MP_APP_ID") ?? "",
+      WECHAT_MP_DEFAULT_THUMB_MEDIA_ID: map.get("WECHAT_MP_DEFAULT_THUMB_MEDIA_ID") ?? "",
+      FEISHU_WEBHOOK_URL: map.get("FEISHU_WEBHOOK_URL") ?? "",
+      OBSIDIAN_VAULT_PATH: map.get("OBSIDIAN_VAULT_PATH") ?? "",
+      REPORT_DAILY_TIME: map.get("REPORT_DAILY_TIME") ?? "08:30",
+      REPORT_TIMEZONE: map.get("REPORT_TIMEZONE") ?? "Asia/Shanghai",
     },
     secure: {
       llmApiKeySet: !!map.get("LLM_API_KEY"),
       llmApiKeyMasked: map.get("LLM_API_KEY") ? "***" : "",
+      wechatAppSecretSet: !!map.get("WECHAT_MP_APP_SECRET"),
+      feishuWebhookSecretSet: !!map.get("FEISHU_WEBHOOK_SECRET"),
     },
     masked: {
       DATABASE_URL: maskUrl(map.get("DATABASE_URL")),

@@ -12,7 +12,7 @@ $composeFile = Join-Path $repoRoot "docker/compose.yaml"
 $localProcessScript = Join-Path $PSScriptRoot "restart-web-worker.ps1"
 $envPath = Join-Path $repoRoot ".env"
 $envExamplePath = Join-Path $repoRoot ".env.example"
-$totalSteps = if ($DockerApp) { 8 } else { 9 }
+$totalSteps = if ($DockerApp) { 9 } else { 11 }
 $script:StepIndex = 0
 
 function Step([string]$message) {
@@ -56,6 +56,28 @@ function Run-Pnpm {
   )
 
   & corepack pnpm @PnpmArgs
+}
+
+function Get-DotEnvValue([string]$key) {
+  if (-not (Test-Path $envPath)) { return "" }
+  $line = Get-Content -LiteralPath $envPath |
+    Where-Object { $_ -match ("^\s*{0}\s*=" -f [regex]::Escape($key)) } |
+    Select-Object -First 1
+  if (-not $line) { return "" }
+  $value = ($line -split "=", 2)[1].Trim()
+  if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+    $value = $value.Substring(1, $value.Length - 2)
+  }
+  return $value
+}
+
+function Sync-ComposeHostPaths {
+  $obsidianVaultPath = Get-DotEnvValue "OBSIDIAN_VAULT_PATH"
+  if ($obsidianVaultPath) {
+    $env:NEWS_OBSIDIAN_HOST_PATH = $obsidianVaultPath
+  } else {
+    Remove-Item Env:\NEWS_OBSIDIAN_HOST_PATH -ErrorAction SilentlyContinue
+  }
 }
 
 function Wait-ForContainer {
@@ -112,17 +134,21 @@ Set-Location $repoRoot
 Write-Host "news-monitor one-click startup" -ForegroundColor Green
 Write-Host ("Root: {0}" -f $repoRoot)
 if ($DockerApp) {
-  Write-Host "Mode: Docker app stack (postgres, redis, rsshub, wewe-rss, migrate, web, worker)"
+  Write-Host "Mode: packaged app stack (Docker runs postgres, redis, rsshub, wewe-rss, web, worker)"
 } else {
   Write-Host "Mode: local dev app (Docker dependencies + local web/worker)"
 }
 
 Step "Checking required tools"
-Require-Command "node" "Install Node.js 22 LTS, then reopen this terminal."
-Require-Command "corepack" "Corepack ships with modern Node.js. Install Node.js 22 LTS."
 Require-Command "docker" "Install and start Docker Desktop."
 Run-Checked "Checking Docker engine" { docker info | Out-Null } "Start Docker Desktop and wait until it says the engine is running."
-Run-Checked "Checking pnpm through Corepack" { Run-Pnpm --version | Out-Null } "If Corepack cannot launch pnpm, run 'corepack prepare pnpm@9.12.0 --activate' once in a terminal, or install pnpm globally."
+if (-not $DockerApp) {
+  Require-Command "node" "Install Node.js 22 LTS, then reopen this terminal."
+  Require-Command "corepack" "Corepack ships with modern Node.js. Install Node.js 22 LTS."
+  Run-Checked "Checking pnpm through Corepack" { Run-Pnpm --version | Out-Null } "If Corepack cannot launch pnpm, run 'corepack prepare pnpm@9.12.0 --activate' once in a terminal, or install pnpm globally."
+} else {
+  Info "Packaged mode only requires Docker Desktop on the host."
+}
 
 Step "Preparing .env"
 if (-not (Test-Path $envPath)) {
@@ -136,7 +162,9 @@ if (-not (Test-Path $envPath)) {
 }
 
 Step "Installing dependencies"
-if ($SkipInstall) {
+if ($DockerApp) {
+  Info "Skipped in packaged Docker mode"
+} elseif ($SkipInstall) {
   Info "Skipped by -SkipInstall"
 } elseif (Test-Path (Join-Path $repoRoot "node_modules/.pnpm")) {
   Info "node_modules found; skipping install"
@@ -151,6 +179,7 @@ Run-Checked "Stopping local web/worker if present" {
 
 if ($DockerApp) {
   Step "Starting full Docker app stack"
+  Sync-ComposeHostPaths
   Run-Checked "docker compose up -d --build web worker" {
     docker compose -f $composeFile up -d --build web worker
   } "Inspect Docker Desktop logs. If this is first launch, image build can take several minutes."
@@ -164,6 +193,7 @@ if ($DockerApp) {
   Wait-ForContainer -Name "news-worker" -ReadyState "healthy" -TimeoutSec 240
 } else {
   Step "Starting Docker dependencies"
+  Sync-ComposeHostPaths
   Run-Checked "docker compose up -d postgres redis rsshub wewe-rss" {
     docker compose -f $composeFile up -d postgres redis rsshub wewe-rss
   } "Docker compose failed. Check Docker Desktop and docker/compose.yaml."
@@ -193,12 +223,22 @@ Step "Waiting for web UI"
 Wait-ForHttp -Url "http://127.0.0.1:3000" -TimeoutSec 120
 
 Step "Printing runtime status"
-Run-Checked "corepack pnpm nm -- ai status --json" {
-  Run-Pnpm nm -- ai status --json
-} "If this fails, the app may still be usable; check .env and Redis/Postgres connectivity."
-Run-Checked "corepack pnpm nm -- queue status --json" {
-  Run-Pnpm nm -- queue status --json
-} "If this fails, check Redis and the worker process."
+if ($DockerApp) {
+  Sync-ComposeHostPaths
+  Run-Checked "docker compose ps" {
+    docker compose -f $composeFile ps
+  } "The app may still be starting. Inspect Docker Desktop logs if a service is unhealthy."
+  Run-Checked "Checking /api/system" {
+    Invoke-WebRequest -Uri "http://127.0.0.1:3000/api/system" -UseBasicParsing -TimeoutSec 10 | Out-Null
+  } "Open http://localhost:3000/ops and http://localhost:3000/health for details."
+} else {
+  Run-Checked "corepack pnpm nm -- ai status --json" {
+    Run-Pnpm nm -- ai status --json
+  } "If this fails, the app may still be usable; check .env and Redis/Postgres connectivity."
+  Run-Checked "corepack pnpm nm -- queue status --json" {
+    Run-Pnpm nm -- queue status --json
+  } "If this fails, check Redis and the worker process."
+}
 
 if (-not $NoOpenBrowser) {
   Step "Opening browser"
@@ -212,6 +252,11 @@ if (-not $NoOpenBrowser) {
 Write-Host ""
 Write-Host "news-monitor is ready." -ForegroundColor Green
 Write-Host "Web UI: http://localhost:3000"
-Write-Host "CLI check: corepack pnpm nm -- status"
-Write-Host "Stop all:  stop-dev.cmd  or  corepack pnpm stop:dev"
-Write-Host "Restart web/worker only: restart-web-worker.cmd  or  corepack pnpm restart:dev"
+if ($DockerApp) {
+  Write-Host "Stop all:  Stop News Monitor.cmd"
+  Write-Host "Diagnostics: Diagnose News Monitor.cmd"
+} else {
+  Write-Host "CLI check: corepack pnpm nm -- status"
+  Write-Host "Stop all:  stop-dev.cmd  or  corepack pnpm stop:dev"
+  Write-Host "Restart web/worker only: restart-web-worker.cmd  or  corepack pnpm restart:dev"
+}

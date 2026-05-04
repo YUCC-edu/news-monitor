@@ -1,8 +1,6 @@
 import { mergeSources } from "@news/db";
-import Redis from "ioredis";
 import { NextResponse } from "next/server";
-
-const redis = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379");
+import { publishSourceChanged } from "@/lib/redis-publish";
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
@@ -17,11 +15,8 @@ export async function POST(request: Request) {
   }
   const result = await mergeSources(body.keepId, body.dropIds);
   for (const id of body.dropIds) {
-    await redis.publish("sources.changed", JSON.stringify({ op: "delete", id }));
+    await publishSourceChanged({ op: "delete", id });
   }
-  await redis.publish(
-    "sources.changed",
-    JSON.stringify({ op: "upsert", id: body.keepId }),
-  );
+  await publishSourceChanged({ op: "upsert", id: body.keepId });
   return NextResponse.json({ ok: true, ...result });
 }

@@ -15,6 +15,7 @@ export const DASH_NAV: Array<{ href: string; label: string; group?: string }> = 
   { href: "/stats", label: "统计", group: "总编流" },
   { href: "/categories", label: "分类", group: "总编流" },
   { href: "/favorites", label: "收藏", group: "总编流" },
+  { href: "/reports", label: "日报发布", group: "总编流" },
   { href: "/sources", label: "信源库", group: "信源运营" },
   { href: "/recommended-sources", label: "推荐信源", group: "信源运营" },
   { href: "/creators", label: "博主订阅", group: "信源运营" },

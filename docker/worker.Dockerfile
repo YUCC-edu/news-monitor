@@ -14,6 +14,7 @@ COPY packages/connectors/wechat-wewe/package.json packages/connectors/wechat-wew
 COPY packages/connectors/x-rsshub/package.json packages/connectors/x-rsshub/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/engine/package.json packages/engine/package.json
 
 RUN pnpm install --frozen-lockfile
 

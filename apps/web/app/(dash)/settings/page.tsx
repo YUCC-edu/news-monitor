@@ -19,8 +19,19 @@ type SettingsResp = {
     LLM_EMBEDDING_MODEL: string;
     LLM_CONCURRENCY: string;
     LLM_DAILY_REQUEST_BUDGET: string;
+    WECHAT_MP_APP_ID: string;
+    WECHAT_MP_DEFAULT_THUMB_MEDIA_ID: string;
+    FEISHU_WEBHOOK_URL: string;
+    OBSIDIAN_VAULT_PATH: string;
+    REPORT_DAILY_TIME: string;
+    REPORT_TIMEZONE: string;
   };
-  secure: { llmApiKeySet: boolean; llmApiKeyMasked: string };
+  secure: {
+    llmApiKeySet: boolean;
+    llmApiKeyMasked: string;
+    wechatAppSecretSet?: boolean;
+    feishuWebhookSecretSet?: boolean;
+  };
 };
 
 type QueueCounts = {
@@ -68,6 +79,8 @@ type SystemData = {
 
 type FormValues = SettingsResp["values"] & {
   LLM_API_KEY: string;
+  WECHAT_MP_APP_SECRET: string;
+  FEISHU_WEBHOOK_SECRET: string;
   clearLlmApiKey: boolean;
 };
 
@@ -83,7 +96,15 @@ const EMPTY_FORM: FormValues = {
   LLM_EMBEDDING_MODEL: "",
   LLM_CONCURRENCY: "2",
   LLM_DAILY_REQUEST_BUDGET: "500",
+  WECHAT_MP_APP_ID: "",
+  WECHAT_MP_DEFAULT_THUMB_MEDIA_ID: "",
+  FEISHU_WEBHOOK_URL: "",
+  OBSIDIAN_VAULT_PATH: "",
+  REPORT_DAILY_TIME: "08:30",
+  REPORT_TIMEZONE: "Asia/Shanghai",
   LLM_API_KEY: "",
+  WECHAT_MP_APP_SECRET: "",
+  FEISHU_WEBHOOK_SECRET: "",
   clearLlmApiKey: false,
 };
 
@@ -143,6 +164,8 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [version, setVersion] = useState("");
   const [llmApiKeySet, setLlmApiKeySet] = useState(false);
+  const [wechatAppSecretSet, setWechatAppSecretSet] = useState(false);
+  const [feishuWebhookSecretSet, setFeishuWebhookSecretSet] = useState(false);
   const [form, setForm] = useState<FormValues>(EMPTY_FORM);
   const [system, setSystem] = useState<SystemData | null>(null);
   const [prevSystem, setPrevSystem] = useState<SystemData | null>(null);
@@ -170,9 +193,13 @@ export default function SettingsPage() {
       const data = (await resp.json()) as SettingsResp;
       setVersion(data.version);
       setLlmApiKeySet(data.secure.llmApiKeySet);
+      setWechatAppSecretSet(Boolean(data.secure.wechatAppSecretSet));
+      setFeishuWebhookSecretSet(Boolean(data.secure.feishuWebhookSecretSet));
       setForm({
         ...data.values,
         LLM_API_KEY: "",
+        WECHAT_MP_APP_SECRET: "",
+        FEISHU_WEBHOOK_SECRET: "",
         clearLlmApiKey: false,
       });
     } catch (e) {
@@ -222,7 +249,15 @@ export default function SettingsPage() {
         LLM_EMBEDDING_MODEL: form.LLM_EMBEDDING_MODEL,
         LLM_CONCURRENCY: form.LLM_CONCURRENCY,
         LLM_DAILY_REQUEST_BUDGET: form.LLM_DAILY_REQUEST_BUDGET,
+        WECHAT_MP_APP_ID: form.WECHAT_MP_APP_ID,
+        WECHAT_MP_DEFAULT_THUMB_MEDIA_ID: form.WECHAT_MP_DEFAULT_THUMB_MEDIA_ID,
+        FEISHU_WEBHOOK_URL: form.FEISHU_WEBHOOK_URL,
+        OBSIDIAN_VAULT_PATH: form.OBSIDIAN_VAULT_PATH,
+        REPORT_DAILY_TIME: form.REPORT_DAILY_TIME,
+        REPORT_TIMEZONE: form.REPORT_TIMEZONE,
         ...(form.LLM_API_KEY.trim() ? { LLM_API_KEY: form.LLM_API_KEY.trim() } : {}),
+        ...(form.WECHAT_MP_APP_SECRET.trim() ? { WECHAT_MP_APP_SECRET: form.WECHAT_MP_APP_SECRET.trim() } : {}),
+        ...(form.FEISHU_WEBHOOK_SECRET.trim() ? { FEISHU_WEBHOOK_SECRET: form.FEISHU_WEBHOOK_SECRET.trim() } : {}),
       };
       const resp = await fetch("/api/settings", {
         method: "PUT",
@@ -239,6 +274,8 @@ export default function SettingsPage() {
       setSaved(`已保存到根目录 .env：AI_MODE=${form.AI_MODE}。请重启 web/worker 使新配置生效。`);
       setForm((old) => ({ ...old, LLM_API_KEY: "", clearLlmApiKey: false }));
       setLlmApiKeySet(form.clearLlmApiKey ? !!form.LLM_API_KEY.trim() : llmApiKeySet || !!form.LLM_API_KEY.trim());
+      setWechatAppSecretSet(wechatAppSecretSet || !!form.WECHAT_MP_APP_SECRET.trim());
+      setFeishuWebhookSecretSet(feishuWebhookSecretSet || !!form.FEISHU_WEBHOOK_SECRET.trim());
       await loadSystem();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
@@ -412,6 +449,39 @@ export default function SettingsPage() {
                 />
                 清空现有 LLM_API_KEY
               </label>
+            </div>
+          </section>
+
+          <section style={{ ...cardStyle, marginBottom: 16 }}>
+            <h2 style={sectionTitle}>日报发布</h2>
+            <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
+              每天按 REPORT_DAILY_TIME 生成日报，并自动推送公众号草稿箱、飞书和 Obsidian。密钥留空表示不修改现有值。
+            </div>
+            <div style={gridStyle}>
+              <Field label="REPORT_DAILY_TIME" value={form.REPORT_DAILY_TIME} onChange={(v) => update("REPORT_DAILY_TIME", v)} />
+              <Field label="REPORT_TIMEZONE" value={form.REPORT_TIMEZONE} onChange={(v) => update("REPORT_TIMEZONE", v)} />
+              <Field label="WECHAT_MP_APP_ID" value={form.WECHAT_MP_APP_ID} onChange={(v) => update("WECHAT_MP_APP_ID", v)} />
+              <Field
+                label={`WECHAT_MP_APP_SECRET (${wechatAppSecretSet ? "已配置" : "未配置"})`}
+                value={form.WECHAT_MP_APP_SECRET}
+                onChange={(v) => update("WECHAT_MP_APP_SECRET", v)}
+                type="password"
+                placeholder="留空则不修改"
+              />
+              <Field
+                label="WECHAT_MP_DEFAULT_THUMB_MEDIA_ID"
+                value={form.WECHAT_MP_DEFAULT_THUMB_MEDIA_ID}
+                onChange={(v) => update("WECHAT_MP_DEFAULT_THUMB_MEDIA_ID", v)}
+              />
+              <Field label="FEISHU_WEBHOOK_URL" value={form.FEISHU_WEBHOOK_URL} onChange={(v) => update("FEISHU_WEBHOOK_URL", v)} />
+              <Field
+                label={`FEISHU_WEBHOOK_SECRET (${feishuWebhookSecretSet ? "已配置" : "未配置"})`}
+                value={form.FEISHU_WEBHOOK_SECRET}
+                onChange={(v) => update("FEISHU_WEBHOOK_SECRET", v)}
+                type="password"
+                placeholder="留空则不修改"
+              />
+              <Field label="OBSIDIAN_VAULT_PATH" value={form.OBSIDIAN_VAULT_PATH} onChange={(v) => update("OBSIDIAN_VAULT_PATH", v)} />
             </div>
           </section>
 

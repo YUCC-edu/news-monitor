@@ -4,22 +4,11 @@ import path from "node:path";
 import { deleteAllSources } from "@news/db";
 import { executeCapability } from "@news/engine";
 import { createLogger } from "@news/shared";
-import Redis from "ioredis";
 import { enqueueFetchSource } from "@/lib/fetch-source-queue";
+import { publishSourceChanged } from "@/lib/redis-publish";
 
-let publishRedis: Redis | null = null;
 const log = createLogger("api:sources");
 const PUBLIC_SEED_DISABLED_PATH = path.resolve(process.cwd(), "..", "..", "data", "public-seed-disabled");
-
-function getPublishRedis() {
-  if (!publishRedis) {
-    publishRedis = new Redis(process.env.REDIS_URL ?? "redis://127.0.0.1:6379", {
-      maxRetriesPerRequest: null,
-      lazyConnect: true,
-    });
-  }
-  return publishRedis;
-}
 
 export async function GET(request: Request) {
   const t0 = Date.now();
@@ -72,10 +61,7 @@ export async function POST(request: Request) {
     fetchIntervalSec: number;
   };
   try {
-    await getPublishRedis().publish(
-      "sources.changed",
-      JSON.stringify({ op: "upsert", id: created.id }),
-    );
+    await publishSourceChanged({ op: "upsert", id: created.id });
   } catch (e) {
     log.warn("source created but redis publish failed", { sourceId: created.id, error: e });
   }
@@ -111,10 +97,7 @@ export async function DELETE(request: Request) {
       "utf-8",
     );
     try {
-      await getPublishRedis().publish(
-        "sources.changed",
-        JSON.stringify({ op: "delete-all" }),
-      );
+      await publishSourceChanged({ op: "delete-all" });
     } catch (e) {
       log.warn("sources cleared but redis publish failed", { error: e });
     }

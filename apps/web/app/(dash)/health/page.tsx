@@ -28,12 +28,12 @@ function fmt(raw: string | null) {
 }
 
 function fmtRate(v: number | null) {
-  if (v == null) return "—";
+  if (v == null) return "-";
   return `${Math.round(v * 1000) / 10}%`;
 }
 
 function fmtRecovery(min: number | null | undefined) {
-  if (min == null) return "—";
+  if (min == null) return "-";
   if (min < 60) return `${min}m`;
   const h = Math.floor(min / 60);
   const m = min % 60;
@@ -77,12 +77,25 @@ export default function HealthPage() {
     await load();
   }
 
+  const categorySummary =
+    rows.length === 0
+      ? "-"
+      : Object.entries(
+          rows.reduce<Record<string, number>>((acc, row) => {
+            const k = row.errorCategory ?? "未知";
+            acc[k] = (acc[k] ?? 0) + 1;
+            return acc;
+          }, {}),
+        )
+          .map(([k, v]) => `${k}:${v}`)
+          .join(" / ");
+
   return (
     <div>
       <header style={{ display: "flex", alignItems: "baseline", marginBottom: 16 }}>
         <h1 className="nm-title">信源健康</h1>
         <span style={{ marginLeft: 12, color: "#5b6478", fontSize: 12 }}>
-          M5：状态与立即抓取 · 近 24h 为「抓取条目中有 enrichment 行」的比例
+          状态、立即抓取与最近 24h 流水线入库率
         </span>
       </header>
       <div
@@ -95,64 +108,28 @@ export default function HealthPage() {
           color: "#9aa4b2",
         }}
       >
-        最近错误类别分布：{" "}
-        {rows.length === 0
-          ? "—"
-          : Object.entries(
-              rows.reduce<Record<string, number>>((acc, row) => {
-                const k = row.errorCategory ?? "未知";
-                acc[k] = (acc[k] ?? 0) + 1;
-                return acc;
-              }, {}),
-            )
-              .map(([k, v]) => `${k}:${v}`)
-              .join(" / ")}
+        最近错误分类分布：{categorySummary}
       </div>
       {!bootstrapped && loading ? (
         <div className="nm-table-wrap" aria-busy="true" aria-label="加载中">
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={thtdStyle}>名称</th>
-                <th style={thtdStyle}>类型</th>
-                <th style={thtdStyle}>启用</th>
-                <th style={thtdStyle}>上次成功</th>
-                <th style={thtdStyle}>近24h流水线</th>
-                <th style={thtdStyle}>失败次数</th>
-                <th style={thtdStyle}>错误分类</th>
-                <th style={thtdStyle}>建议动作</th>
-                <th style={thtdStyle}>最近恢复</th>
-                <th style={thtdStyle}>错误</th>
-                <th style={thtdStyle}>操作</th>
+                {headers.map((header) => (
+                  <th key={header} style={thtdStyle}>
+                    {header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {Array.from({ length: 8 }).map((_, i) => (
                 <tr key={i}>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: `${40 + (i % 4) * 10}%` }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: 72 }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: 36 }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: 120 }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: 56 }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: 28 }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 14, width: "min(200px, 80%)" }} />
-                  </td>
-                  <td style={thtdStyle}>
-                    <Skeleton style={{ height: 32, width: 96 }} />
-                  </td>
+                  {headers.map((header, index) => (
+                    <td key={header} style={thtdStyle}>
+                      <Skeleton style={{ height: index === headers.length - 1 ? 32 : 14, width: index === 0 ? "70%" : 80 }} />
+                    </td>
+                  ))}
                 </tr>
               ))}
             </tbody>
@@ -163,17 +140,11 @@ export default function HealthPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={thtdStyle}>名称</th>
-                <th style={thtdStyle}>类型</th>
-                <th style={thtdStyle}>启用</th>
-                <th style={thtdStyle}>上次成功</th>
-                <th style={thtdStyle}>近24h流水线</th>
-                <th style={thtdStyle}>失败次数</th>
-                <th style={thtdStyle}>错误分类</th>
-                <th style={thtdStyle}>建议动作</th>
-                <th style={thtdStyle}>最近恢复</th>
-                <th style={thtdStyle}>错误</th>
-                <th style={thtdStyle}>操作</th>
+                {headers.map((header) => (
+                  <th key={header} style={thtdStyle}>
+                    {header}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -186,12 +157,12 @@ export default function HealthPage() {
                   <td style={thtdStyle}>{fmtRate(row.pipeline24hRate)}</td>
                   <td style={thtdStyle}>{row.failCount}</td>
                   <td style={thtdStyle}>{row.errorCategory ?? "未知"}</td>
-                  <td style={thtdStyle}>{row.remediation ?? "—"}</td>
+                  <td style={thtdStyle}>{row.remediation ?? "-"}</td>
                   <td style={thtdStyle}>{fmtRecovery(row.recoveredAgoMin)}</td>
                   <td style={thtdStyle}>{row.lastError ? row.lastError.slice(0, 80) : "-"}</td>
                   <td style={thtdStyle}>
                     <button style={btnStyle} onClick={() => void runNow(row.id)}>
-                      立即抓一次
+                      立即抓取
                     </button>
                   </td>
                 </tr>
@@ -203,6 +174,8 @@ export default function HealthPage() {
     </div>
   );
 }
+
+const headers = ["名称", "类型", "启用", "上次成功", "24h 入库率", "失败次数", "错误分类", "建议动作", "最近恢复", "错误", "操作"];
 
 const thtdStyle: React.CSSProperties = {
   textAlign: "left",

@@ -83,8 +83,11 @@ services:
       REDIS_URL: redis://redis:6379
       RSSHUB_BASE: http://rsshub:1200
       WEWE_RSS_BASE: http://wewe-rss:4000
+      OBSIDIAN_VAULT_PATH: /obsidian
     ports:
       - "127.0.0.1:3000:3000"
+    volumes:
+      - ${NEWS_OBSIDIAN_HOST_PATH:-./.data/obsidian}:/obsidian
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -120,6 +123,9 @@ services:
       REDIS_URL: redis://redis:6379
       RSSHUB_BASE: http://rsshub:1200
       WEWE_RSS_BASE: http://wewe-rss:4000
+      OBSIDIAN_VAULT_PATH: /obsidian
+    volumes:
+      - ${NEWS_OBSIDIAN_HOST_PATH:-./.data/obsidian}:/obsidian
     depends_on:
       migrate:
         condition: service_completed_successfully

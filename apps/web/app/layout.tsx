@@ -6,6 +6,16 @@ import { ToastProvider } from "@/app/ui/toast-context";
 export const metadata: Metadata = {
   title: "news-monitor",
   description: "Self-hosted multi-source AI news monitor",
+  applicationName: "News Monitor",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "News Monitor",
+  },
+  icons: {
+    icon: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

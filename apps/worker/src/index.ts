@@ -11,6 +11,8 @@ import { handleEnrichItem } from "./jobs/enrich-item";
 import { handleNameCluster } from "./jobs/name-cluster";
 import { handleRetention } from "./jobs/retention";
 import { handleRecommendXSignals } from "./jobs/recommend-x-signals";
+import { handleGenerateReport } from "./jobs/generate-report";
+import { handlePublishReport } from "./jobs/publish-report";
 import {
   FETCH_QUEUE_NAME,
   removeSourceSchedule,
@@ -25,6 +27,7 @@ const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) {
   throw new Error("REDIS_URL is not set");
 }
+const redisConnectionUrl = redisUrl;
 
 register(hnConnector);
 register(rssConnector);
@@ -32,17 +35,30 @@ register(xRsshubConnector);
 register(xRsshubSearchConnector);
 register(wechatWeweConnector);
 
-const queueConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
-const workerConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
-const enrichQueueConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
-const enrichWorkerConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
-const subConnection = new Redis(redisUrl, { maxRetriesPerRequest: null });
+function createRedisConnection(name: string) {
+  const connection = new Redis(redisConnectionUrl, { maxRetriesPerRequest: null });
+  connection.on("error", (error) => {
+    log.warn("redis connection error", {
+      connection: name,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+  return connection;
+}
+
+const queueConnection = createRedisConnection("fetch-queue");
+const workerConnection = createRedisConnection("fetch-worker");
+const enrichQueueConnection = createRedisConnection("shared-queue");
+const enrichWorkerConnection = createRedisConnection("shared-worker");
+const subConnection = createRedisConnection("source-change-sub");
 
 const queue = new Queue(FETCH_QUEUE_NAME, { connection: queueConnection });
 const enrichQueue = new Queue("enrich-item", { connection: enrichQueueConnection });
 const nameClusterQueue = new Queue("name-cluster", { connection: enrichQueueConnection });
 const retentionQueue = new Queue("retention", { connection: enrichQueueConnection });
 const recommendXSignalsQueue = new Queue("recommend-x-signals", { connection: enrichQueueConnection });
+const generateReportQueue = new Queue("generate-report", { connection: enrichQueueConnection });
+const publishReportQueue = new Queue("publish-report", { connection: enrichQueueConnection });
 const worker = new Worker(
   FETCH_QUEUE_NAME,
   async (job) =>
@@ -140,6 +156,40 @@ const recommendXSignalsWorker = new Worker(
     concurrency: 1,
   },
 );
+const generateReportWorker = new Worker(
+  "generate-report",
+  async (job) => {
+    const result = await handleGenerateReport(job);
+    if (result.ok && result.reportId && result.publishAfterGenerate) {
+      await publishReportQueue.add(
+        "publish-report",
+        { reportId: result.reportId, trigger: "daily-auto" },
+        { removeOnComplete: 100, removeOnFail: 200 },
+      );
+    }
+    return result;
+  },
+  {
+    connection: enrichWorkerConnection,
+    concurrency: 1,
+  },
+);
+const publishReportWorker = new Worker(
+  "publish-report",
+  async (job) => handlePublishReport(job),
+  {
+    connection: enrichWorkerConnection,
+    concurrency: 1,
+  },
+);
+
+function reportCronPattern() {
+  const raw = process.env.REPORT_DAILY_TIME ?? "08:30";
+  const match = /^(\d{2}):(\d{2})$/.exec(raw);
+  const hour = match ? Math.min(Math.max(Number(match[1]), 0), 23) : 8;
+  const minute = match ? Math.min(Math.max(Number(match[2]), 0), 59) : 30;
+  return `0 ${minute} ${hour} * * *`;
+}
 
 function logJobFailure(queueName: string, job: { id?: string; name?: string; data?: unknown } | undefined, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -194,6 +244,22 @@ async function main() {
       opts: { removeOnComplete: 50, removeOnFail: 200 },
     },
   );
+  await generateReportQueue.upsertJobScheduler(
+    "daily-report",
+    { pattern: reportCronPattern(), tz: process.env.REPORT_TIMEZONE ?? "Asia/Shanghai" },
+    {
+      name: "generate-report",
+      data: {
+        audience: "personal",
+        range: "24h",
+        topN: 10,
+        minSources: 1,
+        trigger: "daily-auto",
+        publishAfterGenerate: true,
+      },
+      opts: { removeOnComplete: 50, removeOnFail: 200 },
+    },
+  );
   subscribeSourceChanges(subConnection, queue);
   log.info("scheduler ready");
 }
@@ -228,6 +294,18 @@ recommendXSignalsWorker.on("completed", (job, result) => {
 recommendXSignalsWorker.on("failed", (job, error) => {
   logJobFailure("recommend-x-signals", job, error);
 });
+generateReportWorker.on("completed", (job, result) => {
+  log.info("job completed", { queue: "generate-report", jobName: job.name, jobId: job.id, data: job.data, result });
+});
+generateReportWorker.on("failed", (job, error) => {
+  logJobFailure("generate-report", job, error);
+});
+publishReportWorker.on("completed", (job, result) => {
+  log.info("job completed", { queue: "publish-report", jobName: job.name, jobId: job.id, data: job.data, result });
+});
+publishReportWorker.on("failed", (job, error) => {
+  logJobFailure("publish-report", job, error);
+});
 
 async function shutdown() {
   log.info("worker shutting down");
@@ -236,11 +314,15 @@ async function shutdown() {
   await nameClusterWorker.close();
   await retentionWorker.close();
   await recommendXSignalsWorker.close();
+  await generateReportWorker.close();
+  await publishReportWorker.close();
   await queue.close();
   await enrichQueue.close();
   await nameClusterQueue.close();
   await retentionQueue.close();
   await recommendXSignalsQueue.close();
+  await generateReportQueue.close();
+  await publishReportQueue.close();
   await subConnection.quit();
   await queueConnection.quit();
   await workerConnection.quit();

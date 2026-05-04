@@ -143,7 +143,15 @@ export async function buildSystemStatusSnapshot() {
   const queueLatestFailed: Record<string, Awaited<ReturnType<typeof getQueueLatestFailed>>> = {};
   const queueLatestCompleted: Record<string, Awaited<ReturnType<typeof getQueueLatestCompleted>>> = {};
   if (redisUrl) {
-    const queueNames = ["fetch-source", "enrich-item", "ai-enrich-item", "name-cluster", "retention"] as const;
+    const queueNames = [
+      "fetch-source",
+      "enrich-item",
+      "ai-enrich-item",
+      "name-cluster",
+      "retention",
+      "generate-report",
+      "publish-report",
+    ] as const;
     const snapshots = await Promise.all(
       queueNames.map(async (name) => {
         const [counts, latestFailed, latestCompleted] = await Promise.all([

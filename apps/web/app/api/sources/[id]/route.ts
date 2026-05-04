@@ -2,11 +2,9 @@ import { NextResponse } from "next/server";
 import { deleteSource, resetSourceFirstFetch } from "@news/db";
 import { executeCapability } from "@news/engine";
 import { createLogger } from "@news/shared";
-import Redis from "ioredis";
 import { enqueueFetchSource } from "@/lib/fetch-source-queue";
+import { publishSourceChanged } from "@/lib/redis-publish";
 
-const redisUrl = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
-const redis = new Redis(redisUrl);
 const log = createLogger("api:sources:id");
 
 type Params = { params: Promise<{ id: string }> };
@@ -43,7 +41,7 @@ export async function PATCH(request: Request, { params }: Params) {
     return NextResponse.json({ existing: payload.existing }, { status: 409 });
   }
   const updated = payload.source as { kind: string };
-  await redis.publish("sources.changed", JSON.stringify({ op: "upsert", id }));
+  await publishSourceChanged({ op: "upsert", id });
   await enqueueFetchSource(id);
   log.info("source updated", { sourceId: id, latencyMs: Date.now() - t0, kind: updated.kind });
   return NextResponse.json(updated);
@@ -57,7 +55,7 @@ export async function DELETE(_request: Request, { params }: Params) {
     log.warn("source delete not found", { sourceId: id });
     return NextResponse.json({ error: "source not found" }, { status: 404 });
   }
-  await redis.publish("sources.changed", JSON.stringify({ op: "delete", id }));
+  await publishSourceChanged({ op: "delete", id });
   log.info("source deleted", { sourceId: id, latencyMs: Date.now() - t0 });
   return NextResponse.json({ ok: true });
 }
@@ -69,7 +67,7 @@ export async function POST(request: Request, { params }: Params) {
     const body = (await request.json()) as { resetFirstFetch?: boolean };
     if (body?.resetFirstFetch) {
       await resetSourceFirstFetch(id);
-      await redis.publish("sources.changed", JSON.stringify({ op: "upsert", id }));
+      await publishSourceChanged({ op: "upsert", id });
     }
   } catch {
     /* no body */

@@ -33,6 +33,7 @@ function isProtectedApiPath(path: string) {
   return (
     path === "/api/settings" ||
     path === "/api/system" ||
+    path.startsWith("/api/reports") ||
     path.startsWith("/api/sources") ||
     path.startsWith("/api/ops")
   );

@@ -1,7 +1,9 @@
 import Redis from "ioredis";
+import { createLogger } from "@news/shared";
 
 const WINDOW_MS = 60_000;
 const MAX_HITS = 30;
+const log = createLogger("assistant:rate-limit");
 
 type Bucket = { count: number; resetAt: number };
 const buckets = new Map<string, Bucket>();
@@ -14,7 +16,12 @@ function getRedis() {
     redis = null;
     return redis;
   }
-  redis = new Redis(url, { maxRetriesPerRequest: 1, lazyConnect: true });
+  redis = new Redis(url, { maxRetriesPerRequest: 1, lazyConnect: true, connectTimeout: 1000 });
+  redis.on("error", (error) => {
+    log.warn("redis rate-limit connection error; using memory fallback", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
   return redis;
 }
 
