@@ -91,12 +91,19 @@ export const PRODUCT_NAV_SECTIONS: ProductNavSection[] = [
   },
 ];
 
-export const DASH_NAV: Array<{ href: string; label: string; group?: string; subtitle?: string }> =
+export const DASH_NAV: Array<{ href: string; label: string; labelEn?: string; group?: string; subtitle?: string }> =
   PRODUCT_NAV_SECTIONS.flatMap((section) => [
-    { href: section.href, label: section.labelZh, group: section.group, subtitle: section.description },
+    {
+      href: section.href,
+      label: section.labelZh,
+      labelEn: section.label,
+      group: section.group,
+      subtitle: section.description,
+    },
     ...section.children.map((child) => ({
       href: child.href,
       label: child.labelZh,
+      labelEn: child.label,
       group: child.group,
       subtitle: child.description,
     })),

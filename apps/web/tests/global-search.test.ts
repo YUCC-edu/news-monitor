@@ -48,3 +48,8 @@ test("command navigation still includes existing feature pages", () => {
     assert.equal(hrefs.has(href), true, `${href} should remain discoverable`);
   }
 });
+
+test("command navigation keeps english product labels for localized consumers", () => {
+  assert.equal(DASH_NAV.find((entry) => entry.href === "/all")?.labelEn, "Read");
+  assert.equal(DASH_NAV.find((entry) => entry.href === "/search")?.labelEn, "Search");
+});
