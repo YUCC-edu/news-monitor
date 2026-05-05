@@ -10,20 +10,97 @@ export type SearchResultRow = {
   meta?: Record<string, unknown>;
 };
 
-export const DASH_NAV: Array<{ href: string; label: string; group?: string }> = [
-  { href: "/", label: "总编台", group: "总编流" },
-  { href: "/stats", label: "统计", group: "总编流" },
-  { href: "/categories", label: "分类", group: "总编流" },
-  { href: "/favorites", label: "收藏", group: "总编流" },
-  { href: "/reports", label: "日报发布", group: "总编流" },
-  { href: "/sources", label: "信源库", group: "信源运营" },
-  { href: "/recommended-sources", label: "推荐信源", group: "信源运营" },
-  { href: "/creators", label: "博主订阅", group: "信源运营" },
-  { href: "/health", label: "信源健康", group: "信源运营" },
-  { href: "/keywords", label: "关键词", group: "信源运营" },
-  { href: "/ops", label: "运营", group: "运营" },
-  { href: "/settings", label: "设置", group: "运营" },
+export type ProductNavId = "today" | "read" | "briefs" | "sources" | "settings";
+
+export type ProductNavEntry = {
+  href: string;
+  label: string;
+  labelZh: string;
+  group: string;
+  description: string;
+};
+
+export type ProductNavSection = ProductNavEntry & {
+  id: ProductNavId;
+  children: ProductNavEntry[];
+};
+
+export const PRODUCT_NAV_SECTIONS: ProductNavSection[] = [
+  {
+    id: "today",
+    href: "/",
+    label: "Today",
+    labelZh: "今日判断",
+    group: "Today",
+    description: "Editorial Radar 与今日主焦点",
+    children: [],
+  },
+  {
+    id: "read",
+    href: "/all",
+    label: "Read",
+    labelZh: "阅读",
+    group: "Read",
+    description: "文章流、搜索、收藏、主题回看",
+    children: [
+      { href: "/search", label: "Search", labelZh: "搜索", group: "Read", description: "搜索事件、信源和文章" },
+      { href: "/favorites", label: "Favorites", labelZh: "收藏", group: "Read", description: "已保存文章" },
+      { href: "/categories", label: "Categories", labelZh: "分类", group: "Read", description: "分类洞察" },
+      { href: "/keywords", label: "Keywords", labelZh: "关键词", group: "Read", description: "关键词和相关事件" },
+    ],
+  },
+  {
+    id: "briefs",
+    href: "/reports",
+    label: "Briefs",
+    labelZh: "简报",
+    group: "Briefs",
+    description: "日报、公众号草稿和发布记录",
+    children: [],
+  },
+  {
+    id: "sources",
+    href: "/sources",
+    label: "Sources",
+    labelZh: "信源",
+    group: "Sources",
+    description: "信源库、推荐信源、博主订阅和健康",
+    children: [
+      {
+        href: "/recommended-sources",
+        label: "Recommended",
+        labelZh: "推荐信源",
+        group: "Sources",
+        description: "待添加的推荐来源",
+      },
+      { href: "/creators", label: "Creators", labelZh: "博主订阅", group: "Sources", description: "创作者订阅" },
+      { href: "/health", label: "Health", labelZh: "信源健康", group: "Sources", description: "抓取质量和健康状态" },
+    ],
+  },
+  {
+    id: "settings",
+    href: "/settings",
+    label: "Settings",
+    labelZh: "设置",
+    group: "Settings",
+    description: "AI 模式、发布渠道、安全和运营入口",
+    children: [
+      { href: "/ops", label: "Ops", labelZh: "运营", group: "Settings", description: "队列和系统工具" },
+      { href: "/stats", label: "Stats", labelZh: "统计", group: "Settings", description: "数据统计与运行指标" },
+    ],
+  },
 ];
+
+export const DASH_NAV: Array<{ href: string; label: string; group?: string; subtitle?: string }> =
+  PRODUCT_NAV_SECTIONS.flatMap((section) => [
+    { href: section.href, label: section.labelZh, group: section.group, subtitle: section.description },
+    ...section.children.map((child) => ({
+      href: child.href,
+      label: child.labelZh,
+      group: child.group,
+      subtitle: child.description,
+    })),
+  ]);
 
 export const SETTINGS_CATALOG: Array<{
   key: string;
