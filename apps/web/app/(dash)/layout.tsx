@@ -10,6 +10,14 @@ import { cn } from "@/app/ui/cn";
 import { CommandPalette } from "@/app/ui/command-palette";
 import { PRODUCT_NAV_SECTIONS } from "@/lib/global-search";
 
+const SECTION_DESCRIPTION_EN: Record<string, string> = {
+  today: "Editorial Radar and main signal",
+  read: "Feed, search, favorites, and topic review",
+  briefs: "Reports, drafts, and publishing history",
+  sources: "Source library, recommendations, creators, and health",
+  settings: "AI mode, channels, security, and ops",
+};
+
 function BrandMark() {
   return (
     <svg
@@ -100,22 +108,50 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
-        <nav className="nm-product-nav" aria-label="Product navigation">
+        <nav
+          className="nm-product-nav"
+          aria-label="Product navigation"
+          style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, padding: "0 12px" }}
+        >
           {PRODUCT_NAV_SECTIONS.map((section) => {
             const active = activeSection?.id === section.id;
             const sectionLabel = locale === "zh-CN" ? section.labelZh : section.label;
-            const sectionDetail = locale === "zh-CN" ? section.labelZh : section.description;
+            const sectionDetail =
+              locale === "zh-CN" ? section.description : (SECTION_DESCRIPTION_EN[section.id] ?? section.description);
             return (
-              <div key={section.id} className="nm-product-nav__section">
+              <div key={section.id} className="nm-product-nav__section" style={{ display: "grid", gap: 4 }}>
                 <Link
                   href={section.href}
                   className={cn("nm-product-nav__primary", active && "nm-product-nav__primary--active")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid",
+                    borderColor: active ? "var(--border-strong)" : "transparent",
+                    background: active ? "color-mix(in srgb, var(--fg-0) 7%, transparent)" : "transparent",
+                    color: active ? "var(--fg-0)" : "var(--fg-2)",
+                    textDecoration: "none",
+                    transition: "color 120ms ease, border-color 120ms ease, background 120ms ease",
+                  }}
                 >
-                  <span>{sectionLabel}</span>
-                  <small>{sectionDetail}</small>
+                  <span style={{ fontSize: 14, fontWeight: active ? 700 : 650, letterSpacing: 0 }}>{sectionLabel}</span>
+                  <small style={{ color: active ? "var(--fg-1)" : "var(--fg-3)", fontSize: 11, lineHeight: 1.35 }}>
+                    {sectionDetail}
+                  </small>
                 </Link>
                 {section.children.length > 0 ? (
-                  <div className="nm-product-nav__children">
+                  <div
+                    className="nm-product-nav__children"
+                    style={{
+                      display: "grid",
+                      gap: 2,
+                      marginLeft: 12,
+                      paddingLeft: 10,
+                      borderLeft: "1px solid var(--border)",
+                    }}
+                  >
                     {section.children.map((child) => {
                       const childActive = pathname === child.href;
                       return (
@@ -123,6 +159,19 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
                           key={child.href}
                           href={child.href}
                           className={cn("nm-product-nav__child", childActive && "nm-product-nav__child--active")}
+                          style={{
+                            display: "block",
+                            padding: "7px 10px",
+                            borderRadius: 7,
+                            background: childActive
+                              ? "color-mix(in srgb, var(--fg-0) 8%, transparent)"
+                              : "transparent",
+                            color: childActive ? "var(--fg-0)" : "var(--fg-2)",
+                            fontSize: 13,
+                            fontWeight: childActive ? 650 : 500,
+                            textDecoration: "none",
+                            transition: "color 120ms ease, background 120ms ease",
+                          }}
                         >
                           {locale === "zh-CN" ? child.labelZh : child.label}
                         </Link>
