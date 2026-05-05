@@ -1,4 +1,5 @@
 export * from "./contract";
+export * from "./agent-brief";
 export * from "./queues";
 export * from "./presets";
 export * from "./publishers";
@@ -6,4 +7,5 @@ export * from "./reports";
 export * from "./service";
 export * from "./source-validation";
 export * from "./system";
+export * from "./visual-style";
 export * from "./writing-style";

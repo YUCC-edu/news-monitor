@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import type { ReactNode } from "react";
 import { useAppearance } from "@/app/ui/appearance-provider";
+import { Button } from "@/app/ui/button";
+import { Card } from "@/app/ui/card";
+import { Select } from "@/app/ui/select";
 import { Skeleton } from "@/app/ui/skeleton";
 
 type SettingsResp = {
@@ -108,12 +112,17 @@ const EMPTY_FORM: FormValues = {
   clearLlmApiKey: false,
 };
 
-function dot(ok: boolean | undefined, label?: string) {
-  const color = ok ? "#2ba245" : ok === false ? "#ef4444" : "#5b6478";
+function statusColor(ok: boolean | undefined) {
+  if (ok) return "var(--ok)";
+  if (ok === false) return "var(--danger)";
+  return "var(--fg-2)";
+}
+
+function StatusPill({ ok, label }: { ok?: boolean; label: string }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, display: "inline-block" }} />
-      {label ?? (ok ? "OK" : ok === false ? "FAIL" : "—")}
+    <span style={{ ...pillStyle, borderColor: statusColor(ok), color: statusColor(ok) }}>
+      <span style={{ width: 8, height: 8, borderRadius: 99, background: statusColor(ok) }} />
+      {label}
     </span>
   );
 }
@@ -121,37 +130,20 @@ function dot(ok: boolean | undefined, label?: string) {
 function inferAdvice(data: SystemData | null, previous: SystemData | null): string[] {
   if (!data) return [];
   const advice: string[] = [];
-  if (!data.env.redis.ok) advice.push("Redis 不可用：先检查 REDIS_URL 与容器状态。");
-  if (!data.env.rsshub.ok) advice.push("RSSHub 不可用：检查 RSSHUB_BASE、网络与服务日志。");
-  if (!data.env.wewe.ok) advice.push("WeWe 不可用：检查 WEWE_RSS_BASE 与 AUTH_CODE。");
+  if (!data.env.redis.ok) advice.push("Redis 不可用，队列不会继续执行。先检查 REDIS_URL 和容器状态。");
+  if (!data.env.rsshub.ok) advice.push("RSSHub 不可用，检查 RSSHUB_BASE、网络连通和服务日志。");
+  if (!data.env.wewe.ok) advice.push("WeWe RSS 不可用，检查 WEWE_RSS_BASE 与 AUTH_CODE。");
   if ((data.dataHealth?.orphanClusters ?? 0) > 0) {
-    advice.push(
-      `数据清理需关注：当前有 ${data.dataHealth?.orphanClusters ?? 0} 个孤立聚类。可执行 retention 任务或 cleanupOrphanClusters 清理。`,
-    );
+    advice.push(`当前有 ${data.dataHealth?.orphanClusters ?? 0} 个孤立聚类，可在空闲时执行 retention 或 cleanupOrphanClusters。`);
   }
-  const queueIssues = Object.entries(data.queues).filter(([name, c]) => {
-    const waiting = c?.waiting ?? 0;
-    const failed = c?.failed ?? 0;
-    const prevFailed = previous?.queues?.[name]?.failed ?? 0;
-    const increasingFast = failed > prevFailed;
-    return waiting > 100 || failed >= 10 || increasingFast;
+  const queueIssues = Object.entries(data.queues).filter(([name, counts]) => {
+    const failed = counts?.failed ?? 0;
+    const waiting = counts?.waiting ?? 0;
+    const previousFailed = previous?.queues?.[name]?.failed ?? 0;
+    return waiting > 100 || failed >= 10 || failed > previousFailed;
   });
   if (queueIssues.length > 0) {
-    const detail = queueIssues
-      .map(([name, c]) => {
-        const bits: string[] = [];
-        if ((c?.waiting ?? 0) > 100) bits.push(`waiting=${c?.waiting ?? 0}（积压）`);
-        const prevFailed = previous?.queues?.[name]?.failed ?? 0;
-        if ((c?.failed ?? 0) > 0) {
-          const delta = (c?.failed ?? 0) - prevFailed;
-          bits.push(`failed=${c?.failed ?? 0}${delta > 0 ? `（+${delta}）` : ""}`);
-        }
-        return `${name}（${bits.join("，")}）`;
-      })
-      .join("；");
-    advice.push(
-      `队列需关注：${detail}。判断策略：waiting>100、failed>=10、或 failed 相比上次轮询仍在增长。请先执行 pnpm run queue:inspect（必要时加 -- --recent-minutes 30）查看实时失败聚类；完整步骤见 docs/runbooks/queue-failed-jobs.md。修正后重启 Worker，再执行 pnpm run queue:retry-fetch / queue:retry-enrich；仅清历史可用 scripts/clean-failed-jobs.ts --queue <名> --apply。Redis 绿灯只代表连通，不代表队列无故障增长。`,
-    );
+    advice.push("队列有积压或失败增长，优先运行 pnpm run queue:inspect 查看最近失败原因，再决定是否 retry。");
   }
   return advice;
 }
@@ -175,21 +167,22 @@ export default function SettingsPage() {
   const failureHighlights = useMemo(() => {
     if (!system?.queueLatestFailed) return [];
     return Object.entries(system.queueLatestFailed)
-      .filter(([, v]) => !!v)
-      .map(([name, v]) => ({ name, row: v! }))
+      .filter(([, row]) => Boolean(row))
+      .map(([name, row]) => ({ name, row: row! }))
       .slice(0, 4);
   }, [system]);
+
   const llmMissingBaseUrl = form.AI_MODE === "llm" && !form.LLM_BASE_URL.trim();
   const llmMissingApiKey =
     form.AI_MODE === "llm" && !form.LLM_API_KEY.trim() && (!llmApiKeySet || form.clearLlmApiKey);
-  const llmModeChanged = system?.env.llm.mode !== form.AI_MODE;
+  const llmModeChanged = Boolean(system && system.env.llm.mode !== form.AI_MODE);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const resp = await fetch("/api/settings");
-      if (!resp.ok) throw new Error(`加载设置失败（${resp.status}）`);
+      if (!resp.ok) throw new Error(`加载设置失败：${resp.status}`);
       const data = (await resp.json()) as SettingsResp;
       setVersion(data.version);
       setLlmApiKeySet(data.secure.llmApiKeySet);
@@ -216,7 +209,7 @@ export default function SettingsPage() {
       systemRef.current = data;
       setSystem(data);
     } catch {
-      // ignore
+      // System health is advisory; settings can still be edited.
     }
   }, []);
 
@@ -226,11 +219,15 @@ export default function SettingsPage() {
   }, [loadSettings, loadSystem]);
 
   useEffect(() => {
-    const t = setInterval(() => {
+    const timer = setInterval(() => {
       if (document.visibilityState === "visible") void loadSystem();
     }, 30000);
-    return () => clearInterval(t);
+    return () => clearInterval(timer);
   }, [loadSystem]);
+
+  function update<K extends keyof FormValues>(key: K, value: FormValues[K]) {
+    setForm((old) => ({ ...old, [key]: value }));
+  }
 
   async function saveAll() {
     setSaving(true);
@@ -262,20 +259,22 @@ export default function SettingsPage() {
       const resp = await fetch("/api/settings", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          values,
-          version,
-          clearLlmApiKey: form.clearLlmApiKey,
-        }),
+        body: JSON.stringify({ values, version, clearLlmApiKey: form.clearLlmApiKey }),
       });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error ?? `保存失败（${resp.status}）`);
+      if (!resp.ok) throw new Error(data.error ?? `保存失败：${resp.status}`);
       setVersion(data.version);
-      setSaved(`已保存到根目录 .env：AI_MODE=${form.AI_MODE}。请重启 web/worker 使新配置生效。`);
-      setForm((old) => ({ ...old, LLM_API_KEY: "", clearLlmApiKey: false }));
-      setLlmApiKeySet(form.clearLlmApiKey ? !!form.LLM_API_KEY.trim() : llmApiKeySet || !!form.LLM_API_KEY.trim());
-      setWechatAppSecretSet(wechatAppSecretSet || !!form.WECHAT_MP_APP_SECRET.trim());
-      setFeishuWebhookSecretSet(feishuWebhookSecretSet || !!form.FEISHU_WEBHOOK_SECRET.trim());
+      setSaved(`已保存到根目录 .env。AI_MODE=${form.AI_MODE}，重启 web/worker 后完全生效。`);
+      setForm((old) => ({
+        ...old,
+        LLM_API_KEY: "",
+        WECHAT_MP_APP_SECRET: "",
+        FEISHU_WEBHOOK_SECRET: "",
+        clearLlmApiKey: false,
+      }));
+      setLlmApiKeySet(form.clearLlmApiKey ? Boolean(form.LLM_API_KEY.trim()) : llmApiKeySet || Boolean(form.LLM_API_KEY.trim()));
+      setWechatAppSecretSet(wechatAppSecretSet || Boolean(form.WECHAT_MP_APP_SECRET.trim()));
+      setFeishuWebhookSecretSet(feishuWebhookSecretSet || Boolean(form.FEISHU_WEBHOOK_SECRET.trim()));
       await loadSystem();
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
@@ -284,162 +283,127 @@ export default function SettingsPage() {
     }
   }
 
-  function update<K extends keyof FormValues>(key: K, value: FormValues[K]) {
-    setForm((old) => ({ ...old, [key]: value }));
+  if (loading) {
+    return (
+      <div style={{ display: "grid", gap: 16 }} aria-busy="true" aria-label="加载中">
+        <Skeleton style={{ height: 34, width: 160 }} />
+        <div style={layoutStyle}>
+          <Skeleton style={{ height: 420, width: "100%" }} />
+          <Skeleton style={{ height: 620, width: "100%" }} />
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div>
-      <header style={{ display: "flex", alignItems: "baseline", marginBottom: 16 }}>
-        <h1 className="nm-title">设置</h1>
-        <span style={{ marginLeft: 12, color: "#5b6478", fontSize: 12 }}>
-          Web 配置中心（保存到根目录 .env）
-        </span>
-        <button style={{ ...ghostBtn, marginLeft: "auto" }} onClick={() => void loadSystem()}>
-          立即复测
-        </button>
+    <div style={{ display: "grid", gap: 16 }}>
+      <header style={headerStyle}>
+        <div>
+          <h1 className="nm-title">设置</h1>
+          <div className="nm-muted" style={{ marginTop: 6 }}>
+            配置模型、采集、发布通道和运行诊断。密钥留空表示不修改现有值。
+          </div>
+        </div>
+        <Button onClick={() => void loadSystem()} disabled={saving}>立即复测</Button>
       </header>
 
-      {loading ? (
-        <div aria-busy="true" aria-label="加载中">
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <Skeleton style={{ height: 16, width: 56, marginBottom: 14 }} />
-            <div style={gridStyle}>
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} style={{ display: "grid", gap: 6 }}>
-                  <Skeleton style={{ height: 12, width: 120 }} />
-                  <Skeleton style={{ height: 40, width: "100%" }} />
-                </div>
-              ))}
-            </div>
-          </section>
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <Skeleton style={{ height: 16, width: 96, marginBottom: 14 }} />
-            <div style={gridStyle}>
-              {Array.from({ length: 2 }).map((_, i) => (
-                <div key={i} style={{ display: "grid", gap: 6 }}>
-                  <Skeleton style={{ height: 12, width: 100 }} />
-                  <Skeleton style={{ height: 40, width: "100%" }} />
-                </div>
-              ))}
-            </div>
-          </section>
-          <section style={cardStyle}>
-            <Skeleton style={{ height: 16, width: 120, marginBottom: 14 }} />
-            <div style={gridStyle}>
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} style={{ display: "grid", gap: 6 }}>
-                  <Skeleton style={{ height: 12, width: 140 }} />
-                  <Skeleton style={{ height: 40, width: "100%" }} />
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-      ) : (
-        <>
-          {error && <div style={errorStyle}>{error}</div>}
-          {saved && <div style={okStyle}>{saved}</div>}
+      {error ? <div style={errorStyle}>{error}</div> : null}
+      {saved ? <div style={okStyle}>{saved}</div> : null}
 
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>{copy.appearanceLabel}</h2>
-            <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
-              {locale === "zh-CN"
-                ? "这里控制界面语言和主题。中文模式优先显示 titleZh/contentZh，英文模式优先显示原文。"
-                : "Control interface language and theme here. Chinese mode prefers titleZh/contentZh, English mode prefers the original text."}
+      <div style={layoutStyle}>
+        <aside style={sideStyle}>
+          <Card style={{ padding: 16, display: "grid", gap: 14 }}>
+            <div>
+              <div style={sectionTitle}>运行概览</div>
+              <div className="nm-muted" style={{ fontSize: 12 }}>每 30 秒自动刷新</div>
             </div>
-            <div style={gridStyle}>
-              <label style={field}>
-                <div style={fieldLabel}>{copy.languageLabel}</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" style={locale === "zh-CN" ? solidBtn : ghostBtn} onClick={() => setLocale("zh-CN")}>
-                    {copy.languageChinese}
-                  </button>
-                  <button type="button" style={locale === "en-US" ? solidBtn : ghostBtn} onClick={() => setLocale("en-US")}>
-                    {copy.languageEnglish}
-                  </button>
-                </div>
-              </label>
-              <label style={field}>
-                <div style={fieldLabel}>{copy.themeLabel}</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" style={theme === "dark" ? solidBtn : ghostBtn} onClick={() => setTheme("dark")}>
-                    {copy.themeDark}
-                  </button>
-                  <button type="button" style={theme === "light" ? solidBtn : ghostBtn} onClick={() => setTheme("light")}>
-                    {copy.themeLight}
-                  </button>
-                  <button type="button" style={theme === "paper" ? solidBtn : ghostBtn} onClick={() => setTheme("paper")}>
-                    {copy.themePaper}
-                  </button>
-                </div>
-              </label>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <StatusPill ok={system?.env.redis.ok} label="Redis" />
+              <StatusPill ok={system?.env.rsshub.ok} label="RSSHub" />
+              <StatusPill ok={system?.env.wewe.ok} label="WeWe" />
             </div>
-          </section>
-
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>LLM</h2>
+            <div style={metricGrid}>
+              <Metric label="AI 模式" value={system?.env.llm.mode ?? form.AI_MODE} />
+              <Metric label="预算/天" value={String(system?.env.llm.dailyRequestBudget ?? form.LLM_DAILY_REQUEST_BUDGET)} />
+              <Metric label="信源" value={String(system?.dataHealth?.enabledSources ?? "-")} />
+              <Metric label="条目" value={String(system?.dataHealth?.items ?? "-")} />
+            </div>
             {system ? (
-              <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
-                AI_MODE={system.env.llm.mode} · LLM {system.env.llm.enabled ? "enabled" : "optional/off"} · budget{" "}
-                {system.env.llm.dailyRequestBudget}/day
+              <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
+                Node {system.node.version} / {system.node.platform} / 已运行 {Math.floor(system.node.uptimeSec / 60)} 分钟
+              </div>
+            ) : (
+              <div className="nm-muted" style={{ fontSize: 12 }}>暂无运行数据</div>
+            )}
+            {advice.length ? (
+              <div style={warningBox}>
+                {advice.map((item) => (
+                  <div key={item}>{item}</div>
+                ))}
               </div>
             ) : null}
+          </Card>
+        </aside>
+
+        <main style={{ display: "grid", gap: 14, minWidth: 0 }}>
+          <Section title="外观">
             <div style={gridStyle}>
-              <label style={field}>
-                <div style={fieldLabel}>AI_MODE</div>
-                <select
-                  value={form.AI_MODE}
-                  onChange={(e) => update("AI_MODE", e.target.value as FormValues["AI_MODE"])}
-                  style={fieldInput}
-                >
-                  <option value="core">core - no LLM required</option>
-                  <option value="llm">llm - use configured LLM</option>
-                  <option value="agent">agent - external Agent handles AI</option>
-                </select>
-                {form.AI_MODE === "llm" ? (
-                  <div style={llmMissingBaseUrl || llmMissingApiKey ? warningText : helpText}>
-                    已选择 LLM 模式。保存后会写入 .env，必须重启 web/worker 后才会真正生效。
-                    {llmMissingBaseUrl || llmMissingApiKey ? (
-                      <>
-                        {" "}缺少：
-                        {[llmMissingBaseUrl ? "LLM_BASE_URL" : "", llmMissingApiKey ? "LLM_API_KEY" : ""]
-                          .filter(Boolean)
-                          .join("、")}
-                        。
-                      </>
-                    ) : null}
-                  </div>
-                ) : form.AI_MODE === "agent" ? (
-                  <div style={helpText}>Agent 模式只保留配置语义。本轮不会启用 Agent 接管发现链路。</div>
-                ) : (
-                  <div style={helpText}>Core 模式不需要 LLM Key，抓取、关键词、聚类和排序会正常运行。</div>
-                )}
-                {llmModeChanged ? <div style={helpText}>当前运行中的模式仍是 {system?.env.llm.mode ?? "unknown"}。</div> : null}
+              <div style={fieldStyle}>
+                <div style={labelStyle}>{copy.languageLabel}</div>
+                <div style={buttonRow}>
+                  <Button size="sm" variant={locale === "zh-CN" ? "primary" : "ghost"} onClick={() => setLocale("zh-CN")}>
+                    {copy.languageChinese}
+                  </Button>
+                  <Button size="sm" variant={locale === "en-US" ? "primary" : "ghost"} onClick={() => setLocale("en-US")}>
+                    {copy.languageEnglish}
+                  </Button>
+                </div>
+              </div>
+              <div style={fieldStyle}>
+                <div style={labelStyle}>{copy.themeLabel}</div>
+                <div style={buttonRow}>
+                  <Button size="sm" variant={theme === "dark" ? "primary" : "ghost"} onClick={() => setTheme("dark")}>
+                    {copy.themeDark}
+                  </Button>
+                  <Button size="sm" variant={theme === "light" ? "primary" : "ghost"} onClick={() => setTheme("light")}>
+                    {copy.themeLight}
+                  </Button>
+                  <Button size="sm" variant={theme === "paper" ? "primary" : "ghost"} onClick={() => setTheme("paper")}>
+                    {copy.themePaper}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Section>
+
+          <Section title="AI 与 LLM">
+            <div style={gridStyle}>
+              <label style={fieldStyle}>
+                <div style={labelStyle}>AI_MODE</div>
+                <Select value={form.AI_MODE} onChange={(e) => update("AI_MODE", e.target.value as FormValues["AI_MODE"])}>
+                  <option value="core">core - 不依赖 LLM</option>
+                  <option value="llm">llm - 使用本地配置模型</option>
+                  <option value="agent">agent - 外部 Agent 接管</option>
+                </Select>
+                {llmMissingBaseUrl || llmMissingApiKey ? (
+                  <div style={warningText}>LLM 模式缺少 {[
+                    llmMissingBaseUrl ? "LLM_BASE_URL" : "",
+                    llmMissingApiKey ? "LLM_API_KEY" : "",
+                  ].filter(Boolean).join("、")}。</div>
+                ) : null}
+                {llmModeChanged ? <div style={helpText}>当前运行中的模式仍是 {system?.env.llm.mode}，保存后需重启生效。</div> : null}
               </label>
               <Field label="LLM_BASE_URL" value={form.LLM_BASE_URL} onChange={(v) => update("LLM_BASE_URL", v)} />
               <Field label="LLM_CHAT_MODEL" value={form.LLM_CHAT_MODEL} onChange={(v) => update("LLM_CHAT_MODEL", v)} />
-              <Field
-                label="LLM_EMBEDDING_MODEL"
-                value={form.LLM_EMBEDDING_MODEL}
-                onChange={(v) => update("LLM_EMBEDDING_MODEL", v)}
-              />
-              <Field
-                label="LLM_CONCURRENCY"
-                value={form.LLM_CONCURRENCY}
-                onChange={(v) => update("LLM_CONCURRENCY", v)}
-              />
-              <Field
-                label="LLM_DAILY_REQUEST_BUDGET"
-                value={form.LLM_DAILY_REQUEST_BUDGET}
-                onChange={(v) => update("LLM_DAILY_REQUEST_BUDGET", v)}
-              />
+              <Field label="LLM_EMBEDDING_MODEL" value={form.LLM_EMBEDDING_MODEL} onChange={(v) => update("LLM_EMBEDDING_MODEL", v)} />
+              <Field label="LLM_CONCURRENCY" value={form.LLM_CONCURRENCY} onChange={(v) => update("LLM_CONCURRENCY", v)} />
+              <Field label="LLM_DAILY_REQUEST_BUDGET" value={form.LLM_DAILY_REQUEST_BUDGET} onChange={(v) => update("LLM_DAILY_REQUEST_BUDGET", v)} />
               <Field
                 label={`LLM_API_KEY (${llmApiKeySet ? "已配置" : "未配置"})`}
                 value={form.LLM_API_KEY}
                 onChange={(v) => update("LLM_API_KEY", v)}
                 type="password"
-                placeholder="留空则不修改"
+                placeholder="留空不修改"
               />
               <label style={checkboxLine}>
                 <input
@@ -450,13 +414,9 @@ export default function SettingsPage() {
                 清空现有 LLM_API_KEY
               </label>
             </div>
-          </section>
+          </Section>
 
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>日报发布</h2>
-            <div style={{ ...muted, marginBottom: 10, fontSize: 13 }}>
-              每天按 REPORT_DAILY_TIME 生成日报，并自动推送公众号草稿箱、飞书和 Obsidian。密钥留空表示不修改现有值。
-            </div>
+          <Section title="日报与发布通道">
             <div style={gridStyle}>
               <Field label="REPORT_DAILY_TIME" value={form.REPORT_DAILY_TIME} onChange={(v) => update("REPORT_DAILY_TIME", v)} />
               <Field label="REPORT_TIMEZONE" value={form.REPORT_TIMEZONE} onChange={(v) => update("REPORT_TIMEZONE", v)} />
@@ -466,12 +426,13 @@ export default function SettingsPage() {
                 value={form.WECHAT_MP_APP_SECRET}
                 onChange={(v) => update("WECHAT_MP_APP_SECRET", v)}
                 type="password"
-                placeholder="留空则不修改"
+                placeholder="留空不修改"
               />
               <Field
                 label="WECHAT_MP_DEFAULT_THUMB_MEDIA_ID"
                 value={form.WECHAT_MP_DEFAULT_THUMB_MEDIA_ID}
                 onChange={(v) => update("WECHAT_MP_DEFAULT_THUMB_MEDIA_ID", v)}
+                placeholder="留空时自动使用风格样例封面上传"
               />
               <Field label="FEISHU_WEBHOOK_URL" value={form.FEISHU_WEBHOOK_URL} onChange={(v) => update("FEISHU_WEBHOOK_URL", v)} />
               <Field
@@ -479,150 +440,100 @@ export default function SettingsPage() {
                 value={form.FEISHU_WEBHOOK_SECRET}
                 onChange={(v) => update("FEISHU_WEBHOOK_SECRET", v)}
                 type="password"
-                placeholder="留空则不修改"
+                placeholder="留空不修改"
               />
               <Field label="OBSIDIAN_VAULT_PATH" value={form.OBSIDIAN_VAULT_PATH} onChange={(v) => update("OBSIDIAN_VAULT_PATH", v)} />
             </div>
-          </section>
+          </Section>
 
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>队列与存储</h2>
+          <Section title="数据与采集">
             <div style={gridStyle}>
               <Field label="REDIS_URL" value={form.REDIS_URL} onChange={(v) => update("REDIS_URL", v)} />
               <Field label="DATABASE_URL" value={form.DATABASE_URL} onChange={(v) => update("DATABASE_URL", v)} />
-            </div>
-          </section>
-
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>RSS 与公众号</h2>
-            <div style={gridStyle}>
               <Field label="RSSHUB_BASE" value={form.RSSHUB_BASE} onChange={(v) => update("RSSHUB_BASE", v)} />
               <Field label="WEWE_RSS_BASE" value={form.WEWE_RSS_BASE} onChange={(v) => update("WEWE_RSS_BASE", v)} />
-              <Field
-                label="WEWE_RSS_AUTH_CODE"
-                value={form.WEWE_RSS_AUTH_CODE}
-                onChange={(v) => update("WEWE_RSS_AUTH_CODE", v)}
-              />
+              <Field label="WEWE_RSS_AUTH_CODE" value={form.WEWE_RSS_AUTH_CODE} onChange={(v) => update("WEWE_RSS_AUTH_CODE", v)} />
             </div>
-            <details style={{ marginTop: 8, maxWidth: 760 }}>
-              <summary style={{ cursor: "pointer", color: "#8fa1c3", fontSize: 12 }}>查看 WeWe 常见报错说明</summary>
-              <p style={{ ...muted, marginTop: 8 }}>
-                与 news-monitor 的 <code style={{ fontSize: 12 }}>.env</code> 不同，WeWe 网页会把登录码存进<strong>该域名下的</strong>{" "}
-                <code style={{ fontSize: 12 }}>localStorage.authCode</code>，并在每个请求里作为{" "}
-                <code style={{ fontSize: 12 }}>Authorization</code> 头发给后端；其中只要混入 BOM、中文、弯引号等就会整页报错。处理：在 WeWe
-                打开的页面上按 F12 → Application（应用）→ Local Storage → 选中 WeWe 的源站 → 删除键{" "}
-                <code style={{ fontSize: 12 }}>authCode</code> 或「清除站点数据」→ 刷新后重新登录，且口令必须与容器一致、仅 ASCII。本页保存的{" "}
-                <code style={{ fontSize: 12 }}>WEWE_RSS_AUTH_CODE</code> 只影响 Worker 拉 Atom，不会自动改掉浏览器里的 WeWe 缓存。
-              </p>
-            </details>
-            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {form.RSSHUB_BASE && (
-                <a href={form.RSSHUB_BASE} target="_blank" rel="noreferrer" style={linkBtn}>
-                  打开 RSSHub
-                </a>
-              )}
-              {form.WEWE_RSS_BASE && (
+            <div style={buttonRow}>
+              {form.RSSHUB_BASE ? <a href={form.RSSHUB_BASE} target="_blank" rel="noreferrer" style={linkBtn}>打开 RSSHub</a> : null}
+              {form.WEWE_RSS_BASE ? (
                 <a href={`${form.WEWE_RSS_BASE.replace(/\/$/, "")}/dash`} target="_blank" rel="noreferrer" style={linkBtn}>
                   打开 WeWe 面板
                 </a>
-              )}
+              ) : null}
             </div>
-          </section>
+          </Section>
 
-          <section style={{ ...cardStyle, marginBottom: 16 }}>
-            <h2 style={sectionTitle}>运行情况</h2>
-            {!system ? (
-              <div style={muted}>暂无运行数据</div>
-            ) : (
-              <>
-                {failureHighlights.length > 0 ? (
-                  <div style={{ ...errorStyle, marginBottom: 10 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 6 }}>最近失败摘要（优先处理）</div>
-                    <ul style={{ margin: 0, paddingLeft: 18 }}>
-                      {failureHighlights.map((f) => (
-                        <li key={`${f.name}:${f.row.jobId}`}>
-                          <strong>{f.name}</strong>：{f.row.failedReason || "unknown error"}（job={f.row.jobId || "n/a"}）
-                        </li>
-                      ))}
-                    </ul>
+          <Section title="运行队列">
+            {failureHighlights.length ? (
+              <div style={errorStyle}>
+                <strong>最近失败摘要</strong>
+                {failureHighlights.map((failure) => (
+                  <div key={`${failure.name}:${failure.row.jobId}`} style={{ marginTop: 6 }}>
+                    {failure.name}: {failure.row.failedReason || "unknown error"} (job={failure.row.jobId || "n/a"})
                   </div>
-                ) : null}
-                <div style={statusRow}>
-                  <div>Redis: {dot(system.env.redis.ok)}</div>
-                  <div>RSSHub: {dot(system.env.rsshub.ok)}</div>
-                  <div>WeWe: {dot(system.env.wewe.ok)}</div>
-                </div>
-                <div className="nm-table-wrap">
-                  <table style={{ ...tableStyle, marginTop: 10 }}>
-                    <thead>
-                      <tr>
-                        <th style={thStyle}>队列</th>
-                        <th style={thStyle}>waiting</th>
-                        <th style={thStyle}>active</th>
-                        <th style={thStyle}>failed</th>
-                        <th style={thStyle}>delayed</th>
+                ))}
+              </div>
+            ) : null}
+            {system ? (
+              <div className="nm-table-wrap">
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>队列</th>
+                      <th style={thStyle}>waiting</th>
+                      <th style={thStyle}>active</th>
+                      <th style={thStyle}>failed</th>
+                      <th style={thStyle}>delayed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(system.queues).map(([name, counts]) => (
+                      <tr key={name}>
+                        <td style={tdStyle}>{name}</td>
+                        <td style={tdStyle}>{counts?.waiting ?? "-"}</td>
+                        <td style={tdStyle}>{counts?.active ?? "-"}</td>
+                        <td style={{ ...tdStyle, color: (counts?.failed ?? 0) > 0 ? "var(--danger)" : "var(--fg-1)" }}>{counts?.failed ?? "-"}</td>
+                        <td style={tdStyle}>{counts?.delayed ?? "-"}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(system.queues).map(([name, c]) => (
-                        <tr key={name}>
-                          <td style={tdStyle}>{name}</td>
-                          <td style={tdStyle}>{c?.waiting ?? "—"}</td>
-                          <td style={tdStyle}>{c?.active ?? "—"}</td>
-                          <td style={{ ...tdStyle, color: (c?.failed ?? 0) > 0 ? "#ff8f8f" : "#cdd2dc" }}>{c?.failed ?? "—"}</td>
-                          <td style={tdStyle}>{c?.delayed ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div style={{ marginTop: 10, color: "#cdd2dc", fontSize: 13 }}>
-                  Node {system.node.version} · {system.node.platform} · 已运行 {Math.floor(system.node.uptimeSec / 60)} 分钟
-                </div>
-                {system.dataHealth ? (
-                  <div style={{ marginTop: 6, color: "#cdd2dc", fontSize: 13 }}>
-                    数据：{system.dataHealth.items} items · {system.dataHealth.enrichments} enrichments ·{" "}
-                    {system.dataHealth.clusters} clusters · 孤立聚类{" "}
-                    <span style={{ color: system.dataHealth.orphanClusters > 0 ? "#ffbe7a" : "#b8f2ca" }}>
-                      {system.dataHealth.orphanClusters}
-                    </span>
-                  </div>
-                ) : null}
-                {system.queueLatestCompleted?.retention ? (
-                  <div style={{ marginTop: 6, color: "#73809b", fontSize: 12 }}>
-                    最近 retention：job={system.queueLatestCompleted.retention.jobId || "n/a"} ·{" "}
-                    {system.queueLatestCompleted.retention.finishedOn
-                      ? new Date(system.queueLatestCompleted.retention.finishedOn).toLocaleString("zh-CN")
-                      : "时间未知"}
-                  </div>
-                ) : null}
-                {system.backups[0] && (
-                  <div style={{ marginTop: 6, color: "#73809b", fontSize: 12 }}>
-                    最近备份：{system.backups[0].name} · {system.backups[0].sizeKB} KB ·{" "}
-                    {new Date(system.backups[0].mtime).toLocaleString("zh-CN")}
-                  </div>
-                )}
-                {advice.length > 0 && (
-                  <ul style={{ margin: "10px 0 0", paddingLeft: 18, color: "#ffbe7a", fontSize: 13 }}>
-                    {advice.map((item) => (
-                      <li key={item}>{item}</li>
                     ))}
-                  </ul>
-                )}
-              </>
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="nm-muted">暂无运行队列数据</div>
             )}
-          </section>
+          </Section>
+        </main>
+      </div>
 
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-            <button style={ghostBtn} onClick={() => void loadSettings()}>
-              重载表单
-            </button>
-            <button style={saveBtn} disabled={saving} onClick={() => void saveAll()}>
-              {saving ? "保存中..." : "保存全部"}
-            </button>
-          </div>
-        </>
-      )}
+      <div style={saveBar}>
+        <div className="nm-muted" style={{ fontSize: 12 }}>当前配置版本：{version || "-"}</div>
+        <div style={buttonRow}>
+          <Button onClick={() => void loadSettings()} disabled={saving}>重载表单</Button>
+          <Button variant="primary" disabled={saving} onClick={() => void saveAll()}>
+            {saving ? "保存中..." : "保存全部"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <Card style={{ padding: 16, display: "grid", gap: 12 }}>
+      <h2 style={sectionTitle}>{title}</h2>
+      {children}
+    </Card>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={metricStyle}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -635,76 +546,154 @@ function Field(props: {
   placeholder?: string;
 }) {
   return (
-    <label style={field}>
-      <div style={fieldLabel}>{props.label}</div>
+    <label style={fieldStyle}>
+      <div style={labelStyle}>{props.label}</div>
       <input
         type={props.type ?? "text"}
         value={props.value}
         placeholder={props.placeholder}
         onChange={(e) => props.onChange(e.target.value)}
-        style={fieldInput}
+        style={inputStyle}
       />
     </label>
   );
 }
 
-const cardStyle: CSSProperties = {
-  background: "var(--bg-1)",
-  border: "1px solid var(--border)",
-  borderRadius: 10,
-  padding: 14,
+const headerStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+  alignItems: "flex-start",
+  flexWrap: "wrap",
 };
-const sectionTitle: CSSProperties = { margin: "0 0 12px", fontSize: 14, color: "var(--fg-0)" };
+
+const layoutStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))",
+  gap: 14,
+  alignItems: "start",
+};
+
+const sideStyle: CSSProperties = {
+  position: "sticky",
+  top: 12,
+};
+
+const sectionTitle: CSSProperties = {
+  margin: 0,
+  color: "var(--fg-0)",
+  fontSize: 16,
+  fontWeight: 750,
+};
+
 const gridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))",
-  gap: 10,
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))",
+  gap: 12,
 };
-const field: CSSProperties = { display: "grid", gap: 4 };
-const fieldLabel: CSSProperties = { color: "var(--fg-2)", fontSize: 12 };
-const helpText: CSSProperties = { color: "var(--fg-2)", fontSize: 12, lineHeight: 1.45 };
-const warningText: CSSProperties = { color: "#ffbe7a", fontSize: 12, lineHeight: 1.45 };
-const fieldInput: CSSProperties = {
+
+const fieldStyle: CSSProperties = {
+  display: "grid",
+  gap: 6,
+  minWidth: 0,
+};
+
+const labelStyle: CSSProperties = {
+  color: "var(--fg-2)",
+  fontSize: 12,
+};
+
+const inputStyle: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 6,
-  padding: "8px 10px",
+  padding: "9px 10px",
   background: "var(--bg-0)",
   color: "var(--fg-0)",
   fontSize: 13,
+  minWidth: 0,
 };
-const checkboxLine: CSSProperties = { color: "var(--fg-1)", fontSize: 13, display: "flex", gap: 6, alignItems: "center" };
-const saveBtn: CSSProperties = {
-  border: "1px solid var(--fg-0)",
-  borderRadius: 6,
-  padding: "8px 14px",
-  background: "var(--fg-0)",
-  color: "var(--bg-0)",
-  cursor: "pointer",
+
+const buttonRow: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  flexWrap: "wrap",
+  alignItems: "center",
+};
+
+const checkboxLine: CSSProperties = {
+  color: "var(--fg-1)",
+  fontSize: 13,
+  display: "flex",
+  gap: 8,
+  alignItems: "center",
+};
+
+const metricGrid: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 8,
+};
+
+const metricStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: 10,
+  color: "var(--fg-2)",
   fontSize: 12,
 };
-const ghostBtn: CSSProperties = {
+
+const pillStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  padding: "5px 9px",
+  fontSize: 12,
+};
+
+const warningBox: CSSProperties = {
+  display: "grid",
+  gap: 6,
+  border: "1px solid var(--border-strong)",
+  borderRadius: 8,
+  padding: 10,
+  color: "#ffbe7a",
+  background: "rgba(255,190,122,0.08)",
+  fontSize: 12,
+  lineHeight: 1.6,
+};
+
+const warningText: CSSProperties = {
+  color: "#ffbe7a",
+  fontSize: 12,
+  lineHeight: 1.5,
+};
+
+const helpText: CSSProperties = {
+  color: "var(--fg-2)",
+  fontSize: 12,
+  lineHeight: 1.5,
+};
+
+const linkBtn: CSSProperties = {
   border: "1px solid var(--border)",
   borderRadius: 6,
-  padding: "8px 14px",
+  padding: "8px 12px",
   background: "transparent",
   color: "var(--fg-1)",
   cursor: "pointer",
   fontSize: 12,
-};
-const solidBtn: CSSProperties = {
-  ...ghostBtn,
-  background: "var(--fg-0)",
-  color: "var(--bg-0)",
-  border: "1px solid var(--fg-0)",
-};
-const linkBtn: CSSProperties = {
-  ...ghostBtn,
   textDecoration: "none",
-  display: "inline-flex",
-  alignItems: "center",
 };
-const statusRow: CSSProperties = { display: "flex", gap: 16, flexWrap: "wrap", color: "var(--fg-1)", fontSize: 13 };
-const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse" };
+
+const tableStyle: CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+};
+
 const thStyle: CSSProperties = {
   textAlign: "left",
   padding: "8px 10px",
@@ -713,15 +702,30 @@ const thStyle: CSSProperties = {
   fontSize: 12,
   fontWeight: 500,
 };
+
 const tdStyle: CSSProperties = {
   padding: "8px 10px",
   borderBottom: "1px solid var(--border)",
   color: "var(--fg-1)",
   fontSize: 13,
 };
-const muted: CSSProperties = { color: "var(--fg-2)" };
+
+const saveBar: CSSProperties = {
+  position: "sticky",
+  bottom: 12,
+  zIndex: 2,
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 12,
+  flexWrap: "wrap",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: 12,
+  background: "var(--bg-1)",
+};
+
 const errorStyle: CSSProperties = {
-  marginBottom: 12,
   border: "1px solid var(--border-strong)",
   borderRadius: 8,
   padding: "8px 10px",
@@ -729,9 +733,9 @@ const errorStyle: CSSProperties = {
   color: "var(--danger)",
   fontSize: 13,
 };
+
 const okStyle: CSSProperties = {
-  marginBottom: 12,
-  border: "1px solid var(--border-strong)",
+  border: "1px solid var(--border)",
   borderRadius: 8,
   padding: "8px 10px",
   background: "rgba(255,255,255,0.05)",

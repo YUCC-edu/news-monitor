@@ -69,6 +69,17 @@ type StyleSample = {
   createdAt: string;
 };
 
+type WechatPreview = {
+  title: string;
+  author: string;
+  digest: string;
+  content: string;
+  markdown: string;
+  contentSource: "styled" | "factual";
+  contentLength: number;
+  markdownLength: number;
+};
+
 const targetLabels: Record<Attempt["targetKind"], string> = {
   wechat: "公众号草稿",
   feishu: "飞书",
@@ -109,6 +120,9 @@ export default function ReportsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [wechatPreview, setWechatPreview] = useState<WechatPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewMode, setPreviewMode] = useState<"rendered" | "html" | "markdown">("rendered");
   const [styleProfile, setStyleProfile] = useState<StyleProfile | null>(null);
   const [styleSamples, setStyleSamples] = useState<StyleSample[]>([]);
   const [sampleForm, setSampleForm] = useState({
@@ -163,10 +177,35 @@ export default function ReportsPage() {
     }
   }, []);
 
+  const loadWechatPreview = useCallback(async (reportId: string) => {
+    setPreviewLoading(true);
+    try {
+      const data = await fetch(`/api/reports/${reportId}/wechat-preview`, { cache: "no-store" }).then((r) => r.json()) as {
+        article?: WechatPreview;
+        error?: string;
+      };
+      if (data.error) throw new Error(data.error);
+      setWechatPreview(data.article ?? null);
+    } catch (previewError) {
+      setWechatPreview(null);
+      setError(previewError instanceof Error ? previewError.message : "加载公众号草稿预览失败");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     void loadStyle();
   }, [load, loadStyle]);
+
+  useEffect(() => {
+    if (!selected?.id) {
+      setWechatPreview(null);
+      return;
+    }
+    void loadWechatPreview(selected.id);
+  }, [loadWechatPreview, selected?.id, selected?.styledWechatHtml, selected?.wechatHtml]);
 
   useEffect(() => {
     if (!selected) return;
@@ -295,18 +334,27 @@ export default function ReportsPage() {
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <section style={panelStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div>
             <h1 style={{ margin: 0, color: "var(--fg-0)", fontSize: 28 }}>日报发布</h1>
             <div className="nm-muted" style={{ marginTop: 6 }}>
               生成中文日报，编辑公众号草稿、飞书摘要和本地 Obsidian 内容。
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Button onClick={() => void generate()} disabled={Boolean(busy)} variant="primary">
+            {busy === "生成" ? "生成中..." : "生成日报"}
+          </Button>
+        </div>
+        <div style={generationGrid}>
+          <label style={field}>
+            <span>内容范围</span>
             <Select value={audience} onChange={(event) => setAudience(event.target.value as "personal" | "public")}>
-              <option value="personal">个人信源</option>
+              <option value="personal">个人信源优先</option>
               <option value="public">公共信源</option>
             </Select>
+          </label>
+          <label style={field}>
+            <span>时间窗口</span>
             <Select value={range} onChange={(event) => setRange(event.target.value as Report["range"])}>
               <option value="24h">24H</option>
               <option value="72h">72H</option>
@@ -314,12 +362,15 @@ export default function ReportsPage() {
               <option value="30d">30D</option>
               <option value="90d">90D</option>
             </Select>
+          </label>
+          <label style={field}>
+            <span>候选条数</span>
             <input aria-label="Top N" type="number" min={1} max={30} value={topN} onChange={(event) => setTopN(Number(event.target.value) || 10)} style={numberInput} />
+          </label>
+          <label style={field}>
+            <span>最少来源</span>
             <input aria-label="Minimum sources" type="number" min={1} max={20} value={minSources} onChange={(event) => setMinSources(Number(event.target.value) || 1)} style={numberInput} />
-            <Button onClick={() => void generate()} disabled={Boolean(busy)}>
-              {busy === "生成" ? "生成中..." : "生成日报"}
-            </Button>
-          </div>
+          </label>
         </div>
       </section>
 
@@ -397,6 +448,61 @@ export default function ReportsPage() {
                   </div>
                 ))}
               </div>
+            </Card>
+
+            <Card style={{ padding: 16, display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ color: "var(--fg-0)", fontWeight: 750, fontSize: 18 }}>公众号草稿预览</div>
+                  <div className="nm-muted" style={{ marginTop: 4, fontSize: 12 }}>
+                    这里渲染的是接口实际发送到微信草稿箱的同一份 HTML。
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <Button size="sm" onClick={() => setPreviewMode("rendered")} disabled={previewMode === "rendered"}>渲染</Button>
+                  <Button size="sm" onClick={() => setPreviewMode("html")} disabled={previewMode === "html"}>HTML</Button>
+                  <Button size="sm" onClick={() => setPreviewMode("markdown")} disabled={previewMode === "markdown"}>Markdown</Button>
+                  <Button size="sm" onClick={() => selected?.id && void loadWechatPreview(selected.id)} disabled={previewLoading}>刷新预览</Button>
+                </div>
+              </div>
+              {wechatPreview ? (
+                <>
+                  <div style={previewMetaGrid}>
+                    <div style={previewMetaItem}>
+                      <span>标题</span>
+                      <strong>{wechatPreview.title}</strong>
+                    </div>
+                    <div style={previewMetaItem}>
+                      <span>内容来源</span>
+                      <strong>{wechatPreview.contentSource === "styled" ? "公众号风格稿" : "事实稿"}</strong>
+                    </div>
+                    <div style={previewMetaItem}>
+                      <span>HTML 长度</span>
+                      <strong>{wechatPreview.contentLength}</strong>
+                    </div>
+                    <div style={previewMetaItem}>
+                      <span>摘要</span>
+                      <strong>{wechatPreview.digest || "无摘要"}</strong>
+                    </div>
+                  </div>
+                  {previewMode === "rendered" ? (
+                    <iframe
+                      title="公众号草稿实际发送预览"
+                      sandbox=""
+                      srcDoc={`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:20px;background:#fff;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;} img{max-width:100%;height:auto;} a{color:#2563eb;}</style></head><body>${wechatPreview.content}</body></html>`}
+                      style={previewFrame}
+                    />
+                  ) : (
+                    <Textarea
+                      readOnly
+                      value={previewMode === "html" ? wechatPreview.content : wechatPreview.markdown}
+                      style={{ ...textareaStyle, minHeight: 320 }}
+                    />
+                  )}
+                </>
+              ) : (
+                <div className="nm-muted">{previewLoading ? "正在生成预览..." : "暂无公众号预览"}</div>
+              )}
             </Card>
 
             <Card style={{ padding: 16, display: "grid", gap: 12 }}>
@@ -517,12 +623,18 @@ const panelStyle = {
 } as const;
 
 const numberInput = {
-  width: 72,
+  width: "100%",
   border: "1px solid var(--border)",
   borderRadius: 6,
   padding: "8px 10px",
   background: "var(--bg-0)",
   color: "var(--fg-0)",
+} as const;
+
+const generationGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 170px), 1fr))",
+  gap: 10,
 } as const;
 
 const textInput = {
@@ -537,6 +649,30 @@ const textareaStyle = {
   minHeight: 220,
   fontFamily: "var(--font-mono)",
   fontSize: 12,
+} as const;
+
+const previewMetaGrid = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))",
+  gap: 8,
+} as const;
+
+const previewMetaItem = {
+  display: "grid",
+  gap: 4,
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: 10,
+  color: "var(--fg-2)",
+  fontSize: 12,
+} as const;
+
+const previewFrame = {
+  width: "100%",
+  minHeight: 520,
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  background: "#fff",
 } as const;
 
 const field = {

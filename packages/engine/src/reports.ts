@@ -170,7 +170,25 @@ function itemSummary(row: ItemListRow) {
   return row.eventSummary || row.contentSummaryZh || row.contentZh || row.contentText || "";
 }
 
-export function renderReport(draft: ReportDraft): RenderedReport {
+function itemMarkdownLink(item: ReportDraft["items"][number]) {
+  return item.url ? `[${escapeMarkdown(item.title)}](${item.url})` : escapeMarkdown(item.title);
+}
+
+function isPaperLike(item: ReportDraft["items"][number]) {
+  const haystack = `${item.title} ${item.url ?? ""} ${item.sourceName} ${item.tags.join(" ")}`.toLowerCase();
+  return /\barxiv\b|paper|论文|research|neurips|iclr|icml|acl|cvpr|openreview|huggingface\.co\/papers/.test(haystack);
+}
+
+function isProductLike(item: ReportDraft["items"][number]) {
+  const haystack = `${item.title} ${item.summary} ${item.sourceName} ${item.tags.join(" ")}`.toLowerCase();
+  return /launch|release|update|product|api|agent|model|tool|browser|app|github|发布|更新|产品|工具|模型|开源/.test(haystack);
+}
+
+function firstOrFallback<T>(values: T[], fallback: T[]) {
+  return values.length ? values : fallback;
+}
+
+function renderFactualMarkdown(draft: ReportDraft) {
   const metricLines = [
     `- 窗口条目：${draft.metrics.itemsWindow}`,
     `- 活跃信源：${draft.metrics.activeSourcesWindow}`,
@@ -186,12 +204,11 @@ export function renderReport(draft: ReportDraft): RenderedReport {
     (keyword, index) =>
       `${index + 1}. ${keyword.title}：${keyword.mentions} 次提及，${keyword.distinctSources} 个来源，分数 ${keyword.attentionScore.toFixed(2)}。${keyword.summary}`,
   );
-  const itemLines = draft.items.map((item, index) => {
-    const link = item.url ? `[${escapeMarkdown(item.title)}](${item.url})` : escapeMarkdown(item.title);
-    return `${index + 1}. ${link} - ${item.sourceName}${item.summary ? `\n   ${item.summary.slice(0, 180)}` : ""}`;
-  });
+  const itemLines = draft.items.map((item, index) =>
+    `${index + 1}. ${itemMarkdownLink(item)} - ${item.sourceName}${item.summary ? `\n   ${item.summary.slice(0, 180)}` : ""}`,
+  );
 
-  const markdown = [
+  return [
     `# ${draft.title}`,
     "",
     `生成时间：${draft.generatedAt}`,
@@ -210,13 +227,21 @@ export function renderReport(draft: ReportDraft): RenderedReport {
     ...(itemLines.length ? itemLines : ["暂无代表文章。"]),
     "",
   ].join("\n");
+}
 
-  const wechatHtml = [
+function renderWechatHtml(draft: ReportDraft) {
+  const metricLines = [
+    `窗口条目：${draft.metrics.itemsWindow}`,
+    `活跃信源：${draft.metrics.activeSourcesWindow}`,
+    `事件簇：${draft.metrics.clustersWindow}`,
+    `关注指数：${draft.metrics.attentionIndex.toFixed(2)}`,
+  ];
+  return [
     `<h1>${escapeHtml(draft.title)}</h1>`,
     `<p><strong>生成时间：</strong>${escapeHtml(draft.generatedAt)}</p>`,
     "<h2>今日概览</h2>",
     "<ul>",
-    ...metricLines.map((line) => `<li>${escapeHtml(line.replace(/^- /, ""))}</li>`),
+    ...metricLines.map((line) => `<li>${escapeHtml(line)}</li>`),
     "</ul>",
     "<h2>热点事件</h2>",
     ...draft.clusters.map(
@@ -232,36 +257,97 @@ export function renderReport(draft: ReportDraft): RenderedReport {
     }),
     "</ol>",
   ].join("\n");
+}
 
-  const feishuPayload = {
+function renderFeishuRadar(draft: ReportDraft) {
+  const papers = firstOrFallback(draft.items.filter(isPaperLike), draft.items).slice(0, 5);
+  const productItems = firstOrFallback(draft.items.filter(isProductLike), draft.items).slice(0, 5);
+  return {
     msg_type: "post",
     content: {
       post: {
         zh_cn: {
-          title: draft.title,
+          title: `今日 AI 雷达 ${draft.reportDate}`,
           content: [
-            [{ tag: "text", text: `窗口条目 ${draft.metrics.itemsWindow}，活跃信源 ${draft.metrics.activeSourcesWindow}，事件簇 ${draft.metrics.clustersWindow}\n` }],
-            ...draft.clusters.slice(0, 8).map((cluster, index) => [
-              { tag: "text", text: `${index + 1}. ${cluster.title}\n${cluster.summary}\n` },
+            [{ tag: "text", text: `概览：窗口条目 ${draft.metrics.itemsWindow}，活跃信源 ${draft.metrics.activeSourcesWindow}，事件簇 ${draft.metrics.clustersWindow}，关注指数 ${draft.metrics.attentionIndex.toFixed(2)}\n` }],
+            [{ tag: "text", text: "最受关注\n" }],
+            ...draft.clusters.slice(0, 3).map((cluster, index) => [
+              { tag: "text", text: `${index + 1}. ${cluster.title} - ${cluster.summary}\n` },
             ]),
-            ...draft.items.slice(0, 5).map((item) => [
+            [{ tag: "text", text: "最新研究/论文\n" }],
+            ...papers.map((item, index) => [
               item.url
-                ? { tag: "a", text: item.title, href: item.url }
-                : { tag: "text", text: item.title },
+                ? { tag: "a", text: `${index + 1}. ${item.title}`, href: item.url }
+                : { tag: "text", text: `${index + 1}. ${item.title}` },
               { tag: "text", text: ` - ${item.sourceName}\n` },
             ]),
+            [{ tag: "text", text: "工程/产品动态\n" }],
+            ...productItems.map((item, index) => [
+              item.url
+                ? { tag: "a", text: `${index + 1}. ${item.title}`, href: item.url }
+                : { tag: "text", text: `${index + 1}. ${item.title}` },
+              { tag: "text", text: ` - ${item.sourceName}\n` },
+            ]),
+            [{ tag: "text", text: "值得继续追踪：优先看跨源信号、论文链接、能改变工作流的 Agent/工具动态。\n" }],
           ],
         },
       },
     },
   };
+}
 
+function renderObsidianLedger(draft: ReportDraft) {
+  const papers = firstOrFallback(draft.items.filter(isPaperLike), draft.items).slice(0, 8);
+  const productItems = firstOrFallback(draft.items.filter(isProductLike), draft.items).slice(0, 8);
+  const oddIdeas = draft.clusters.filter((cluster) => cluster.score >= 0.8).slice(0, 5);
+  return [
+    "---",
+    `date: ${draft.reportDate}`,
+    "type: ai-knowledge-ledger",
+    `range: ${draft.range}`,
+    `audience: ${draft.audience}`,
+    `items: ${draft.metrics.itemsWindow}`,
+    `clusters: ${draft.metrics.clustersWindow}`,
+    "---",
+    "",
+    `# AI Knowledge Ledger - ${draft.reportDate}`,
+    "",
+    "## 今日概览",
+    `- 窗口条目：${draft.metrics.itemsWindow}`,
+    `- 活跃信源：${draft.metrics.activeSourcesWindow}`,
+    `- 关注指数：${draft.metrics.attentionIndex.toFixed(2)}`,
+    "",
+    "## 最新论文与研究",
+    ...(papers.length
+      ? papers.map((item) => `- ${itemMarkdownLink(item)}\n  - 来源：${item.sourceName}\n  - 摘要：${item.summary || "待补充阅读笔记"}`)
+      : ["- 今天没有识别到强论文候选。"]),
+    "",
+    "## 新奇想法",
+    ...(oddIdeas.length
+      ? oddIdeas.map((cluster) => `- ${cluster.title}\n  - ${cluster.summary}\n  - 为什么新奇：跨源出现且关注分数 ${cluster.score.toFixed(2)}，值得后续人工判断。`)
+      : ["- 暂无显著的新奇想法。"]),
+    "",
+    "## 工程与产品动态",
+    ...(productItems.length
+      ? productItems.map((item) => `- ${itemMarkdownLink(item)} - ${item.sourceName}\n  - ${item.summary || "待补充影响判断"}`)
+      : ["- 暂无明显工程/产品动态。"]),
+    "",
+    "## 可沉淀的知识卡片",
+    ...renderTopicCards(draft).map((card) => `- [[Topics/${card.slug}|${card.title}]]`),
+    "",
+    "## 原始链接",
+    ...draft.items.map((item) => `- ${itemMarkdownLink(item)} - ${item.sourceName}`),
+    "",
+  ].join("\n");
+}
+
+export function renderReport(draft: ReportDraft): RenderedReport {
   return {
     draft,
-    markdown,
-    wechatHtml,
-    feishuPayload,
-    obsidianMarkdown: markdown,
+    markdown: renderFactualMarkdown(draft),
+    wechatHtml: renderWechatHtml(draft),
+    feishuPayload: renderFeishuRadar(draft),
+    obsidianMarkdown: renderObsidianLedger(draft),
   };
 }
 
@@ -279,6 +365,11 @@ export function renderTopicCards(draft: ReportDraft) {
       `- 条目数：${cluster.itemsWindow}`,
       `- 分数：${cluster.score.toFixed(2)}`,
       cluster.sources ? `- 来源：${cluster.sources}` : "",
+      "",
+      "### 后续阅读问题",
+      "- 这是真变化，还是单日噪声？",
+      "- 它会改变研究、产品还是工作流？",
+      "- 是否需要单独写成公众号解读？",
       "",
     ].filter(Boolean).join("\n"),
   }));

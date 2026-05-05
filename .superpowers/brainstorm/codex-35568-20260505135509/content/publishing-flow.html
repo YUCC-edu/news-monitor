@@ -1,0 +1,47 @@
+<h2>一句话到公众号草稿箱的交付链路</h2>
+<p class="subtitle">这是我目前理解的完整能力边界：外部 agent 发起，News Monitor 负责选题、成文、配图、上传和入草稿箱。</p>
+
+<div class="mockup">
+  <div class="mockup-header">Target Workflow</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:12px;align-items:stretch;">
+      <div class="placeholder" style="min-height:110px;text-align:left;">
+        <strong>1. Agent 指令</strong><br>
+        “写最近热点 / 最新研究解读，推送到公众号草稿箱”
+      </div>
+      <div class="placeholder" style="min-height:110px;text-align:left;">
+        <strong>2. 选题 brief</strong><br>
+        从热点、论文、收藏、关键词里挑最强信号
+      </div>
+      <div class="placeholder" style="min-height:110px;text-align:left;">
+        <strong>3. 个人 IP 成文</strong><br>
+        标题、结构、事实链、观点、引用、CTA
+      </div>
+      <div class="placeholder" style="min-height:110px;text-align:left;">
+        <strong>4. 自动配图</strong><br>
+        封面图 + 章节图，生成后上传微信素材库
+      </div>
+      <div class="placeholder" style="min-height:110px;text-align:left;">
+        <strong>5. 微信草稿</strong><br>
+        HTML 排版、图片 media_id、草稿箱可直接审核发布
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="complete-agent-api" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Agent API 优先</h3>
+      <p>做一个稳定 HTTP/CLI 能力：Codex 这类工具调用后直接生成公众号草稿。分类页作为内容发现和人工复核界面同步优化。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="dashboard-first" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>页面工作台优先</h3>
+      <p>先把分类页和报告页做成可视化操作台，再把同一套动作暴露给 agent 调用。</p>
+    </div>
+  </div>
+</div>

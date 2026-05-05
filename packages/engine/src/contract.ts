@@ -17,6 +17,7 @@ export const capabilityNameSchema = z.enum([
   "health.sources",
   "queue.status",
   "ops.reenrich",
+  "reports.agentBrief",
   "ai.status",
   "system.status",
 ]);
@@ -177,6 +178,16 @@ export const capabilityInputSchemas = {
     itemId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(500).optional().default(200),
   }),
+  "reports.agentBrief": z
+    .object({
+      audience: z.enum(["public", "personal"]).optional().default("personal"),
+      range: rangeSchema.optional().default("24h"),
+      topN: z.number().int().min(1).max(30).optional().default(10),
+      minSources: z.number().int().min(1).max(20).optional().default(1),
+      reportDate: z.string().trim().min(1).optional(),
+      timezone: z.string().trim().min(1).optional().default("Asia/Shanghai"),
+    })
+    .default({}),
   "ai.status": z.object({}).default({}),
   "system.status": z.object({}).default({}),
 } satisfies Record<CapabilityName, z.ZodTypeAny>;
@@ -205,6 +216,7 @@ export const capabilityCatalog: Record<
   "health.sources": { summary: "Get source health diagnostics", writesData: false },
   "queue.status": { summary: "Get queue pressure and failure status", writesData: false },
   "ops.reenrich": { summary: "Queue re-enrichment for items", writesData: true },
+  "reports.agentBrief": { summary: "Build a token-free Codex handoff for topic selection, WeChat writing, images, and publishing", writesData: false },
   "ai.status": { summary: "Get AI runtime mode and optional LLM status", writesData: false },
   "system.status": { summary: "Get runtime/system status", writesData: false },
 };

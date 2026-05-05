@@ -183,6 +183,7 @@ function capabilityUsage() {
   console.log("  nm clusters siblings --cluster-id <uuid> [--exclude-item <uuid>] [--exclude-source <uuid>] [--json]");
   console.log("  nm items search <query> [--limit <n>] [--range <24h|72h|7d|30d|90d>] [--json]");
   console.log("  nm stats overview [--range <7d|30d|90d>] [--min-sources <n>] [--compare] [--json]");
+  console.log("  nm reports agent-brief [--range <24h|72h|7d|30d|90d>] [--top-n <n>] [--json]");
   console.log("  nm queue status [--json]");
   console.log("  nm ai status [--json]");
   console.log("  nm ops reenrich --scope <source|window|item> [scope flags] [--json]");
@@ -462,6 +463,21 @@ async function main() {
         minSources: numberOption(args, "--min-sources") ?? 2,
         compare: hasFlag(args, "--compare"),
         topN: numberOption(args, "--top-n"),
+      },
+      flags,
+    );
+    return;
+  }
+  if (group === "reports" && command === "agent-brief") {
+    await runCapability(
+      "reports.agentBrief",
+      {
+        audience: stringOption(args, "--audience") ?? "personal",
+        range: stringOption(args, "--range") ?? "24h",
+        topN: numberOption(args, "--top-n") ?? 10,
+        minSources: numberOption(args, "--min-sources") ?? 1,
+        reportDate: stringOption(args, "--report-date"),
+        timezone: stringOption(args, "--timezone") ?? "Asia/Shanghai",
       },
       flags,
     );

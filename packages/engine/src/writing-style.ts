@@ -7,6 +7,7 @@ import {
   type WritingStyleProfile,
 } from "@news/db";
 import type { ReportDraft } from "./reports";
+import { buildWanderImagePrompt } from "./visual-style";
 
 export type WritingStyleSampleInput = {
   title: string;
@@ -88,17 +89,21 @@ function cleanText(value: unknown) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
 
+function cleanBlock(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function uniqueClean(values: unknown) {
   if (!Array.isArray(values)) return [] as string[];
-  return Array.from(
-    new Set(values.map((value) => cleanText(value)).filter(Boolean)),
-  );
+  return Array.from(new Set(values.map((value) => cleanText(value)).filter(Boolean)));
 }
 
 function stripHtml(value: string) {
   return value
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/p>|<\/section>|<\/div>|<\/h[1-6]>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -130,7 +135,7 @@ function headingsFrom(markdown: string, html: string) {
 }
 
 function titlePunctuation(title: string) {
-  return Array.from(new Set(title.match(/[：:，,。！？!?、|｜-]/g) ?? []));
+  return Array.from(new Set(title.match(/[：:，,。！？?——《》「」]/g) ?? []));
 }
 
 function average(values: number[], fallback = 0) {
@@ -191,22 +196,22 @@ export function learnWritingStyleFromSamples(samples: WritingStyleSampleInput[])
   const signals = normalized.map(extractWritingStyleSignals);
   const punctuation = Array.from(new Set(signals.flatMap((signal) => signal.titlePunctuation)));
   const imageNotes = Array.from(new Set(signals.flatMap((signal) => signal.imageNotes)));
-  const preferredSectionCount = Math.max(1, average(signals.map((signal) => signal.headingCount), 2));
+  const preferredSectionCount = Math.max(1, average(signals.map((signal) => signal.headingCount), 3));
   const averageParagraphLength = Math.max(20, average(signals.map((signal) => signal.averageParagraphLength), 80));
   const openingStyle = firstNonEmpty(
     signals.map((signal) => signal.opening),
-    "从一个具体变化切入，再给出判断。",
+    "从一个正在发生的 AI 变化切入，先把现象说清楚。",
   );
   const endingStyle = firstNonEmpty(
     signals.map((signal) => signal.ending),
-    "用一句可持续跟踪的判断收束。",
+    "最后用一个可持续追踪的问题收束。",
   );
-  const dominantNote = imageNotes.join("；") || "clean editorial technology style, restrained colors, low text density";
+  const dominantNote = imageNotes.join("; ") || "clean editorial technology style, restrained colors, low text density";
   return {
     name: "Default WeChat Style",
     sampleCount: normalized.length,
     rules: {
-      summary: `已从 ${normalized.length} 篇历史文章提炼：标题偏判断句，正文按信号、判断、影响展开，配图保持克制清晰。`,
+      summary: `已从 ${normalized.length} 篇历史文章提炼：标题偏判断句，正文按现象、脉络、判断、追踪展开，配图保持克制清晰。`,
       title: {
         patterns: normalized.slice(0, 5).map((sample) => sample.title),
         punctuation,
@@ -220,7 +225,7 @@ export function learnWritingStyleFromSamples(samples: WritingStyleSampleInput[])
       layout: {
         headingPrefix: "##",
         paragraphTone: "克制、判断明确、少形容词、先事实后观点",
-        htmlSectionStyle: "border-left accent, compact paragraph spacing, readable mobile width",
+        htmlSectionStyle: "compact WeChat mobile layout, clear h2 blocks, image placeholders between sections",
       },
       image: {
         coverPrompt: `cover image, ${dominantNote}`,
@@ -231,61 +236,119 @@ export function learnWritingStyleFromSamples(samples: WritingStyleSampleInput[])
   };
 }
 
+function mainTopic(draft: ReportDraft) {
+  return draft.clusters[0]?.title ?? draft.keywords[0]?.title ?? draft.items[0]?.title ?? "今日 AI 信号";
+}
+
 function titleFromDraft(draft: ReportDraft) {
-  const first = draft.clusters[0]?.title ?? draft.keywords[0]?.title ?? "今日信号";
-  return `${first}：今天值得单独看`;
+  return `从 ${mainTopic(draft)} 看 AI 正在发生什么`;
 }
 
-function renderOpening(draft: ReportDraft, profile: LearnedWritingStyleProfile) {
-  const clusterCount = draft.clusters.length;
-  const itemCount = draft.metrics.itemsWindow;
-  return `今天的重点不在信息数量，而在 ${clusterCount} 个信号已经从 ${itemCount} 条内容里浮出来。按「${profile.rules.layout.paragraphTone}」的方式看，最值得先看的是下面这些变化。`;
+function sourceLine(draft: ReportDraft) {
+  const cluster = draft.clusters[0];
+  if (!cluster) return `今天窗口里共有 ${draft.metrics.itemsWindow} 条内容进入观察。`;
+  return `这不是单条新闻的热闹，而是 ${cluster.distinctSources} 个来源、${cluster.itemsWindow} 条内容同时指向同一个变化：${cluster.summary}`;
 }
 
-function renderMarkdownSections(draft: ReportDraft) {
-  const clusterLines = draft.clusters.slice(0, 6).flatMap((cluster, index) => [
-    `## ${index + 1}. ${cluster.title}`,
-    "",
-    cluster.summary,
-    "",
-    `信号强度：${cluster.distinctSources} 个来源，${cluster.itemsWindow} 条内容，分数 ${cluster.score.toFixed(2)}。`,
-    cluster.sources ? `来源：${cluster.sources}` : "",
-    "",
-  ].filter(Boolean));
-  const itemLines = draft.items.slice(0, 5).map((item, index) => {
+function representativeLinks(draft: ReportDraft) {
+  return draft.items.slice(0, 5).map((item, index) => {
     const link = item.url ? `[${item.title}](${item.url})` : item.title;
     return `${index + 1}. ${link} - ${item.sourceName}${item.summary ? `\n   ${item.summary}` : ""}`;
   });
-  return [
-    ...clusterLines,
-    "## 可以继续跟踪的线索",
-    "",
-    ...(itemLines.length ? itemLines : ["暂无代表文章。"]),
-  ];
 }
 
 function imageBriefsFor(draft: ReportDraft, profile: LearnedWritingStyleProfile): StyledReportVariant["imageBriefs"] {
-  const firstTopic = draft.clusters[0]?.title ?? draft.title;
-  const coverPrompt = `${profile.rules.image.coverPrompt}; topic: ${firstTopic}; no dense text, suitable for WeChat cover.`;
-  const sectionBriefs = draft.clusters.slice(0, 3).map((cluster) => ({
-    kind: "section" as const,
-    topic: cluster.title,
-    prompt: `${profile.rules.image.inlinePrompt}; visualize ${cluster.title}; keep it clear for mobile reading.`,
-  }));
-  return [
-    { kind: "cover", topic: firstTopic, prompt: coverPrompt },
-    ...sectionBriefs,
+  const topic = mainTopic(draft);
+  const base = "suitable for image2 generation, mobile WeChat article";
+  const coverPrompt = `${buildWanderImagePrompt({
+    kind: "cover",
+    topic,
+    scene: "night workspace, creator at laptop, quiet AI frontier exploration, title-safe area on the left",
+  })} ${profile.rules.image.coverPrompt}; ${base}.`;
+  const sections = [
+    {
+      kind: "section" as const,
+      topic: "发展脉络",
+      prompt: `${buildWanderImagePrompt({
+        kind: "section",
+        topic,
+        scene: "timeline showing LLM brain, Agent executor, Skills modules, and repeatable workflows",
+      })} ${profile.rules.image.inlinePrompt}; ${base}.`,
+    },
+    {
+      kind: "section" as const,
+      topic: "为什么值得关注",
+      prompt: `${buildWanderImagePrompt({
+        kind: "section",
+        topic,
+        scene: "information diagram explaining research, product, workflow, and knowledge impact",
+      })} ${profile.rules.image.inlinePrompt}; ${base}.`,
+    },
+    {
+      kind: "section" as const,
+      topic: "接下来追踪",
+      prompt: `${buildWanderImagePrompt({
+        kind: "ending",
+        topic,
+        scene: "closing postcard and watchlist with paper, product, and workflow branches",
+      })} ${profile.rules.image.inlinePrompt}; ${base}.`,
+    },
   ];
+  return [{ kind: "cover", topic, prompt: coverPrompt }, ...sections];
 }
 
 export function renderStyledReport(draft: ReportDraft, profile: LearnedWritingStyleProfile): StyledReportVariant {
   const title = titleFromDraft(draft);
+  const topic = mainTopic(draft);
+  const links = representativeLinks(draft);
   const markdownLines = [
     `# ${title}`,
     "",
-    renderOpening(draft, profile),
+    "[[image2:cover]]",
     "",
-    ...renderMarkdownSections(draft),
+    "大家好，我是云上。",
+    "",
+    `今天这个信号值得单独拿出来看：${topic}。`,
+    "",
+    sourceLine(draft),
+    "",
+    "它真正有意思的地方，不在于某个产品又更新了一次，而在于 AI 的能力正在从“模型回答问题”，继续往“系统完成任务”移动。",
+    "",
+    "[[image2:section-1]]",
+    "",
+    "## 发展脉络",
+    "",
+    "如果把这条线拆开，大概可以看到三个层次：",
+    "",
+    "第一层是模型能力本身。LLM 负责理解、生成、推理，是整个系统的大脑。",
+    "",
+    "第二层是 Agent。它把模型放进一个可以调用工具、观察结果、继续行动的任务框架里。",
+    "",
+    "第三层是 Skill 或固定工作流。它把经验沉淀成可复用的动作，让模型不只是会聊天，而是能稳定交付。",
+    "",
+    "[[image2:section-2]]",
+    "",
+    "## 为什么值得关注",
+    "",
+    `这次窗口里出现了 ${draft.metrics.itemsWindow} 条内容、${draft.metrics.clustersWindow} 个事件簇，说明它不是一个孤立噪声。`,
+    "",
+    "我的判断是：接下来真正拉开差距的，可能不是谁的模型名字更响，而是谁能把模型、上下文、工具和工作流组织得更稳定。",
+    "",
+    "这也是我会持续追踪 AI 论文、产品动态和工程实践的原因。论文给方向，产品给验证，工作流给落地。",
+    "",
+    "[[image2:section-3]]",
+    "",
+    "## 接下来追踪",
+    "",
+    "接下来我会重点看三件事：",
+    "",
+    "1. 有没有新的论文把这类能力讲得更清楚。",
+    "2. 有没有产品真的把它做成可重复使用的工作流。",
+    "3. 有没有新奇但还没有被充分讨论的想法冒出来。",
+    "",
+    "## 代表线索",
+    "",
+    ...(links.length ? links : ["暂无代表线索。"]),
     "",
     "## 最后",
     "",
@@ -293,13 +356,12 @@ export function renderStyledReport(draft: ReportDraft, profile: LearnedWritingSt
     "",
   ];
   const markdown = markdownLines.join("\n");
-  const sectionHtml = draft.clusters.slice(0, 6).map((cluster, index) => [
-    `<section style="margin:20px 0;padding:14px 16px;border-left:4px solid #2f6fed;background:#f7f9fc;border-radius:6px;">`,
-    `<h2 style="margin:0 0 8px;font-size:18px;line-height:1.45;">${index + 1}. ${escapeHtml(cluster.title)}</h2>`,
-    `<p style="margin:0 0 8px;line-height:1.8;color:#1f2937;">${escapeHtml(cluster.summary)}</p>`,
-    `<p style="margin:0;color:#64748b;font-size:13px;">${cluster.distinctSources} 个来源，${cluster.itemsWindow} 条内容，分数 ${cluster.score.toFixed(2)}</p>`,
+  const section = (heading: string, body: string) => [
+    `<section style="margin:24px 0;">`,
+    `<h2 style="margin:0 0 10px;font-size:20px;line-height:1.5;font-weight:700;">${escapeHtml(heading)}</h2>`,
+    `<p style="margin:0 0 12px;font-size:15px;line-height:1.9;letter-spacing:1px;color:#1f2937;">${escapeHtml(body)}</p>`,
     `</section>`,
-  ].join(""));
+  ].join("");
   const itemsHtml = draft.items.slice(0, 5).map((item) => {
     const titleHtml = item.url
       ? `<a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>`
@@ -308,11 +370,18 @@ export function renderStyledReport(draft: ReportDraft, profile: LearnedWritingSt
   }).join("");
   const wechatHtml = [
     `<h1 style="font-size:22px;line-height:1.35;margin:0 0 16px;">${escapeHtml(title)}</h1>`,
-    `<p style="line-height:1.9;color:#1f2937;">${escapeHtml(renderOpening(draft, profile))}</p>`,
-    sectionHtml,
-    `<h2 style="font-size:18px;margin:24px 0 8px;">可以继续跟踪的线索</h2>`,
-    `<ol style="padding-left:20px;">${itemsHtml || "<li>暂无代表文章。</li>"}</ol>`,
-    `<p style="line-height:1.9;color:#1f2937;">${escapeHtml(profile.rules.structure.endingStyle)}</p>`,
+    `<p style="text-align:center;color:#64748b;">image2: cover</p>`,
+    `<p style="font-size:15px;line-height:1.9;letter-spacing:1px;">大家好，我是云上。今天这个信号值得单独拿出来看：${escapeHtml(topic)}。</p>`,
+    `<p style="font-size:15px;line-height:1.9;letter-spacing:1px;">${escapeHtml(sourceLine(draft))}</p>`,
+    `<p style="text-align:center;color:#64748b;">image2: section-1</p>`,
+    section("发展脉络", "LLM 是大脑，Agent 是任务框架，Skill 和固定工作流则把经验沉淀成可复用动作。"),
+    `<p style="text-align:center;color:#64748b;">image2: section-2</p>`,
+    section("为什么值得关注", `这次窗口里出现了 ${draft.metrics.itemsWindow} 条内容、${draft.metrics.clustersWindow} 个事件簇，说明它不是一个孤立噪声。`),
+    `<p style="text-align:center;color:#64748b;">image2: section-3</p>`,
+    section("接下来追踪", "接下来重点看论文方向、产品验证、以及能不能沉淀成稳定工作流。"),
+    `<h2 style="font-size:20px;line-height:1.5;">代表线索</h2>`,
+    `<ol style="padding-left:20px;">${itemsHtml || "<li>暂无代表线索。</li>"}</ol>`,
+    `<p style="font-size:15px;line-height:1.9;letter-spacing:1px;">${escapeHtml(profile.rules.structure.endingStyle)}</p>`,
   ].join("\n");
   return {
     title,
@@ -377,10 +446,84 @@ export type ReportWithStyledFields = Pick<Report, "title" | "markdown" | "wechat
   styledWechatHtml?: string | null;
 };
 
+function cleanWechatDigest(markdown: string) {
+  return markdown
+    .replace(/[#*_`>\-[\]()]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+function markdownToWechatHtml(markdown: string) {
+  const lines = markdown.split(/\r?\n/);
+  const html: string[] = [];
+  let listOpen = false;
+  const closeList = () => {
+    if (listOpen) {
+      html.push("</ol>");
+      listOpen = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    const imageMatch = line.match(/^\[\[image2:([^\]]+)]]$/);
+    if (imageMatch) {
+      closeList();
+      html.push(`<p style="text-align:center;color:#64748b;margin:18px 0;">image2: ${escapeHtml(imageMatch[1] ?? "section")}</p>`);
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      closeList();
+      html.push(`<h1 style="font-size:22px;line-height:1.35;margin:0 0 16px;">${escapeHtml(line.slice(2))}</h1>`);
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      closeList();
+      html.push(`<h2 style="margin:24px 0 10px;font-size:20px;line-height:1.5;font-weight:700;">${escapeHtml(line.slice(3))}</h2>`);
+      continue;
+    }
+    const ordered = line.match(/^\d+\.\s+(.+)$/);
+    if (ordered) {
+      if (!listOpen) {
+        html.push(`<ol style="padding-left:20px;margin:10px 0;">`);
+        listOpen = true;
+      }
+      html.push(`<li style="margin:8px 0;line-height:1.8;">${escapeHtml(ordered[1] ?? "")}</li>`);
+      continue;
+    }
+    closeList();
+    html.push(`<p style="font-size:15px;line-height:1.9;letter-spacing:1px;margin:0 0 12px;color:#1f2937;">${escapeHtml(line)}</p>`);
+  }
+
+  closeList();
+  return html.join("\n");
+}
+
 export function selectWechatArticleFields(report: ReportWithStyledFields) {
   return {
     title: cleanText(report.styledTitle) || report.title,
-    markdown: cleanText(report.styledMarkdown) || report.markdown,
-    wechatHtml: cleanText(report.styledWechatHtml) || report.wechatHtml,
+    markdown: cleanBlock(report.styledMarkdown) || report.markdown,
+    wechatHtml: cleanBlock(report.styledWechatHtml) || report.wechatHtml,
+  };
+}
+
+export function buildWechatDraftArticle(report: ReportWithStyledFields) {
+  const article = selectWechatArticleFields(report);
+  const styledMarkdown = cleanBlock(report.styledMarkdown);
+  const styledHtml = cleanBlock(report.styledWechatHtml);
+  const usingStyledContent = Boolean(styledHtml || styledMarkdown);
+  const content = styledHtml || (styledMarkdown ? markdownToWechatHtml(report.styledMarkdown ?? "") : article.wechatHtml);
+  return {
+    title: article.title.slice(0, 64),
+    author: "News Monitor",
+    digest: cleanWechatDigest(article.markdown),
+    content,
+    markdown: article.markdown,
+    contentSource: usingStyledContent ? "styled" as const : "factual" as const,
   };
 }

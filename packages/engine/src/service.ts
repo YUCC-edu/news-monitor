@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { categorizeErrorMessage, classifyRemediation, deriveTaxonomyWithMeta } from "@news/shared";
 import { ZodError } from "zod";
+import { buildCodexAgentBrief } from "./agent-brief";
 import {
   capabilityCatalog,
   capabilityNameSchema,
@@ -27,6 +28,7 @@ import {
   type CapabilitySuccess,
 } from "./contract";
 import { enqueueEnrichItems, enqueueFetchSource } from "./queues";
+import { buildDailyReport } from "./reports";
 import { validateSourceConfig } from "./source-validation";
 import { buildSystemStatusSnapshot } from "./system";
 import { getEnginePresetSources, listEnginePresetPacks } from "./presets";
@@ -406,6 +408,20 @@ export async function executeCapability(
           await enqueueEnrichItems(ids);
         }
         data = { queued: ids.length, itemIds: ids };
+        break;
+      }
+      case "reports.agentBrief": {
+        const input = parseCapabilityInput("reports.agentBrief", rawInput);
+        const rendered = await buildDailyReport({
+          audience: input.audience,
+          range: input.range,
+          topN: input.topN,
+          minSources: input.minSources,
+          reportDate: input.reportDate,
+          timezone: input.timezone,
+          trigger: "agent-brief",
+        });
+        data = buildCodexAgentBrief(rendered.draft);
         break;
       }
       case "system.status": {

@@ -16,6 +16,14 @@ describe("engine capability contract", () => {
     expect(parsed.minSources).toBe(2);
   });
 
+  it("parses defaults for reports.agentBrief", () => {
+    const parsed = parseCapabilityInput("reports.agentBrief", {});
+    expect(parsed.range).toBe("24h");
+    expect(parsed.audience).toBe("personal");
+    expect(parsed.topN).toBe(10);
+    expect(parsed.minSources).toBe(1);
+  });
+
   it("returns invalid_input envelope for malformed sources.fetch", async () => {
     const result = await executeCapability("sources.fetch", { sourceId: "nope" });
     expect(result.ok).toBe(false);

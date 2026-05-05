@@ -9,24 +9,28 @@ import type { ReportDraft } from "../src/reports";
 
 const samples: WritingStyleSampleInput[] = [
   {
-    title: "AI Agent 的新拐点：浏览器正在变成工作台",
-    sourceUrl: "https://example.com/wechat/agent",
+    title: "Agent+Skills：大语言模型的外挂之路",
+    sourceUrl: "https://example.com/wechat/agent-skills",
     contentMarkdown: [
-      "这两天，一个变化值得单独拿出来看。",
+      "大家好，我是云上。",
       "",
-      "## 先看信号",
+      "不知道大家有没有发现一个现象：AI 领域最近有三个核心概念在疯狂涌现：LLM、Agent、Skill。",
       "",
-      "浏览器 Agent 的产品节奏明显加快，几个团队都在把操作能力放进真实工作流。",
+      "## 一：越通用，更智能",
       "",
-      "## 我的判断",
+      "LLM 率先爆发，模型能力持续迭代。",
       "",
-      "短期看是效率工具，长期看是入口迁移。",
+      "## 二：Agent 的三个阶段",
       "",
-      "最后，真正值得关注的不是演示，而是谁能稳定完成任务。",
+      "从提示词工程到上下文工程，再到架构工程，Agent 正在把模型放进真实任务链路。",
+      "",
+      "## 三：最后",
+      "",
+      "下一期再见！",
     ].join("\n"),
     coverImageUrl: "https://img.example.com/agent-cover.png",
     inlineImages: ["https://img.example.com/agent-flow.png"],
-    imageNotes: "封面偏克制科技感，少文字，主体是桌面工作流和浏览器窗口。",
+    imageNotes: "Reference visual style from user's WeChat sample: mobile WeChat long-form article; clean AI/technology editorial cover and inline information graphics; restrained palette; black/white accent blocks; low text density; clear section visuals; 16:9 images; suitable for AI and tech explainers.",
   },
   {
     title: "不是又一个模型更新，而是应用层开始重排",
@@ -44,7 +48,7 @@ const samples: WritingStyleSampleInput[] = [
       "这类变化值得持续跟踪。",
     ].join("\n"),
     inlineImages: ["https://img.example.com/app-map.png"],
-    imageNotes: "正文图适合信息图，颜色干净，像产品架构草图。",
+    imageNotes: "Inline image style: clean information diagram, product architecture map, low text density.",
   },
 ];
 
@@ -123,19 +127,24 @@ describe("wechat writing style learning", () => {
     expect(profile.rules.structure.preferredSectionCount).toBeGreaterThan(0);
     expect(profile.rules.structure.averageParagraphLength).toBeGreaterThan(10);
     expect(profile.rules.image.coverPrompt).toContain("cover");
-    expect(profile.rules.image.notes.join(" ")).toContain("克制");
+    expect(profile.rules.image.notes.join(" ")).toContain("restrained");
   });
 
-  it("renders a styled WeChat variant that preserves report facts and produces image briefs", () => {
+  it("renders a long-form WeChat AI explainer scaffold with image placeholders", () => {
     const profile = learnWritingStyleFromSamples(samples);
     const rendered = renderStyledReport(reportDraft, profile);
 
-    expect(rendered.title).toContain("AI Agent");
-    expect(rendered.markdown).toContain("AI Agent / Browser Use");
+    expect(rendered.title).toContain("从 AI Agent / Browser Use 看");
+    expect(rendered.markdown).toContain("## 发展脉络");
+    expect(rendered.markdown).toContain("## 为什么值得关注");
+    expect(rendered.markdown).toContain("## 接下来追踪");
+    expect(rendered.markdown).toContain("[[image2:cover]]");
+    expect(rendered.markdown).toContain("[[image2:section-1]]");
     expect(rendered.markdown).toContain("Browser agent update");
-    expect(rendered.wechatHtml).toContain("<section");
-    expect(rendered.wechatHtml).toContain("AI Agent / Browser Use");
+    expect(rendered.wechatHtml).toContain("发展脉络");
+    expect(rendered.wechatHtml).toContain("image2");
     expect(rendered.imageBriefs[0]).toMatchObject({ kind: "cover" });
     expect(rendered.imageBriefs[0]?.prompt).toContain("AI Agent / Browser Use");
+    expect(rendered.imageBriefs[1]?.prompt).toContain("16:9");
   });
 });

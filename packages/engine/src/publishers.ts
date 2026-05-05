@@ -7,11 +7,12 @@ import {
   finishPublishAttempt,
   getPublishAttempt,
   getReportWithAttempts,
+  listWritingStyleSamples,
   setReportStatus,
   type PublishTargetKind,
 } from "@news/db";
 import { renderTopicCards, type ReportDraft } from "./reports";
-import { selectWechatArticleFields } from "./writing-style";
+import { buildWechatDraftArticle } from "./writing-style";
 
 export type PublishReportInput = {
   reportId: string;
@@ -26,19 +27,12 @@ type PublishResult = {
 };
 
 let wechatTokenCache: { token: string; expiresAt: number; appId: string } | null = null;
+let wechatThumbMediaIdCache: string | null = null;
 
 function requireEnv(name: string) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is not configured`);
   return value;
-}
-
-function cleanDigest(markdown: string) {
-  return markdown
-    .replace(/[#*_`>\-[\]()]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
 }
 
 async function getWechatAccessToken() {
@@ -74,10 +68,78 @@ async function getWechatAccessToken() {
   return data.access_token;
 }
 
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+async function getFallbackWechatCoverImageUrl() {
+  const samples = await listWritingStyleSamples(20);
+  return samples.find((sample) => sample.coverImageUrl?.trim())?.coverImageUrl?.trim() ?? "";
+}
+
+export async function uploadWechatPermanentImageMaterial(input: {
+  accessToken: string;
+  imageUrl: string;
+  fetchImpl?: FetchLike;
+}) {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const imageResponse = await fetchImpl(input.imageUrl, {
+    headers: { "user-agent": "Mozilla/5.0" },
+  });
+  if (!imageResponse.ok) {
+    throw new Error(`WeChat cover image download failed: ${imageResponse.statusText || imageResponse.status}`);
+  }
+  const contentType = imageResponse.headers.get("content-type") ?? "image/jpeg";
+  const bytes = await imageResponse.arrayBuffer();
+  if (bytes.byteLength === 0) throw new Error("WeChat cover image is empty");
+  if (bytes.byteLength > 10 * 1024 * 1024) throw new Error("WeChat cover image is larger than 10MB");
+
+  const form = new FormData();
+  const filename = contentType.includes("png") ? "news-monitor-cover.png" : "news-monitor-cover.jpg";
+  form.append("media", new Blob([bytes], { type: contentType }), filename);
+  const uploadResponse = await fetchImpl(
+    `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${encodeURIComponent(input.accessToken)}&type=image`,
+    { method: "POST", body: form },
+  );
+  const data = (await uploadResponse.json().catch(() => ({}))) as {
+    media_id?: string;
+    url?: string;
+    errcode?: number;
+    errmsg?: string;
+  };
+  if (!uploadResponse.ok || !data.media_id) {
+    throw new Error(`WeChat material upload failed: ${data.errmsg ?? uploadResponse.statusText}`);
+  }
+  return data.media_id;
+}
+
+export async function resolveWechatThumbMediaId(input: {
+  accessToken: string;
+  configuredMediaId?: string | null;
+  fallbackImageUrl?: string | null;
+  fetchImpl?: FetchLike;
+}) {
+  const configuredMediaId = input.configuredMediaId?.trim();
+  if (configuredMediaId) return configuredMediaId;
+  if (wechatThumbMediaIdCache) return wechatThumbMediaIdCache;
+  const fallbackImageUrl = input.fallbackImageUrl?.trim();
+  if (!fallbackImageUrl) {
+    throw new Error("WECHAT_MP_DEFAULT_THUMB_MEDIA_ID is not configured and no writing-style cover image is available");
+  }
+  wechatThumbMediaIdCache = await uploadWechatPermanentImageMaterial({
+    accessToken: input.accessToken,
+    imageUrl: fallbackImageUrl,
+    fetchImpl: input.fetchImpl,
+  });
+  return wechatThumbMediaIdCache;
+}
+
 async function publishWechatDraft(report: NonNullable<Awaited<ReturnType<typeof getReportWithAttempts>>>): Promise<PublishResult> {
-  const thumbMediaId = requireEnv("WECHAT_MP_DEFAULT_THUMB_MEDIA_ID");
   const accessToken = await getWechatAccessToken();
-  const article = selectWechatArticleFields(report);
+  const thumbMediaId = await resolveWechatThumbMediaId({
+    accessToken,
+    configuredMediaId: process.env.WECHAT_MP_DEFAULT_THUMB_MEDIA_ID,
+    fallbackImageUrl: await getFallbackWechatCoverImageUrl(),
+  });
+  const article = buildWechatDraftArticle(report);
   const response = await fetch(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${encodeURIComponent(accessToken)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -85,9 +147,9 @@ async function publishWechatDraft(report: NonNullable<Awaited<ReturnType<typeof 
       articles: [
         {
           title: article.title.slice(0, 64),
-          author: "News Monitor",
-          digest: cleanDigest(article.markdown),
-          content: article.wechatHtml,
+          author: article.author,
+          digest: article.digest,
+          content: article.content,
           thumb_media_id: thumbMediaId,
           show_cover_pic: 0,
           need_open_comment: 0,

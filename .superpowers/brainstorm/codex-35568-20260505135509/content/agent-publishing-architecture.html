@@ -1,0 +1,54 @@
+<h2>Agent API 优先的交付架构</h2>
+<p class="subtitle">目标是把高成本判断固定成可复用规则，把图片生成放到可替换 provider，保证 Codex/image2 和 HTTP 图片服务走同一条入草稿链路。</p>
+
+<div class="mockup">
+  <div class="mockup-header">Boundary: Codex / News Monitor / WeChat</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:1.1fr 1.3fr 1.1fr;gap:14px;">
+      <div style="border:1px solid #d6dbe6;border-radius:8px;padding:12px;background:#f8fafc;">
+        <div class="label">External Agent</div>
+        <h3 style="margin-top:4px;">Codex</h3>
+        <p>一句话触发任务</p>
+        <p>可用 image2 生成图片</p>
+        <p>把图片文件/URL 回传项目</p>
+      </div>
+
+      <div style="border:1px solid #c8d7ef;border-radius:8px;padding:12px;background:#ffffff;">
+        <div class="label">News Monitor</div>
+        <h3 style="margin-top:4px;">固化工作流</h3>
+        <div style="display:grid;gap:8px;">
+          <div class="placeholder" style="text-align:left;">内容选择：只查已入库热点、论文、收藏、关键词</div>
+          <div class="placeholder" style="text-align:left;">风格生成：历史样本 + 固定个人 IP 配置</div>
+          <div class="placeholder" style="text-align:left;">图片任务：cover + hero/section brief，默认不烧项目图片 API</div>
+          <div class="placeholder" style="text-align:left;">草稿组装：微信 HTML、图片上传、草稿箱创建、attempt 记录</div>
+        </div>
+      </div>
+
+      <div style="border:1px solid #d6dbe6;border-radius:8px;padding:12px;background:#f8fafc;">
+        <div class="label">Delivery</div>
+        <h3 style="margin-top:4px;">微信公众号</h3>
+        <p>永久素材库图片</p>
+        <p>可审核草稿</p>
+        <p>失败可重试，不自动群发</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons">
+  <div class="pros">
+    <h4>Cost Controls</h4>
+    <ul>
+      <li>默认只用数据库事实材料，不临时联网。</li>
+      <li>风格档案使用压缩规则，不反复塞样本。</li>
+      <li>Codex 场景图片由 agent/image2 完成，项目只处理回传和上传。</li>
+    </ul>
+  </div>
+  <div class="cons">
+    <h4>Explicit Tradeoff</h4>
+    <ul>
+      <li>Codex 模式会有一次“图片任务回传”握手，不是单个 HTTP 请求全自动。</li>
+      <li>无外部图片 provider 时，非 Codex 场景只能生成图文 brief 或使用默认封面。</li>
+    </ul>
+  </div>
+</div>
