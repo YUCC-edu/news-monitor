@@ -53,3 +53,14 @@ test("command navigation keeps english product labels for localized consumers", 
   assert.equal(DASH_NAV.find((entry) => entry.href === "/all")?.labelEn, "Read");
   assert.equal(DASH_NAV.find((entry) => entry.href === "/search")?.labelEn, "Search");
 });
+
+test("command navigation can be found by English labels", () => {
+  const navRows = DASH_NAV.map((entry) => ({
+    title: entry.label,
+    subtitle: [entry.subtitle, entry.group].filter(Boolean).join(" · "),
+  }));
+  const searchMatches = filterAndScore(navRows, "Search");
+  const recommendedMatches = filterAndScore(navRows, "Recommended");
+  assert.equal(searchMatches.some((match) => match.row.title === "搜索"), true);
+  assert.equal(recommendedMatches.some((match) => match.row.title === "推荐信源"), true);
+});

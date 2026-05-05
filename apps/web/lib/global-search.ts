@@ -98,14 +98,14 @@ export const DASH_NAV: Array<{ href: string; label: string; labelEn?: string; gr
       label: section.labelZh,
       labelEn: section.label,
       group: section.group,
-      subtitle: section.description,
+      subtitle: `${section.description} · ${section.label} · ${section.group}`,
     },
     ...section.children.map((child) => ({
       href: child.href,
       label: child.labelZh,
       labelEn: child.label,
       group: child.group,
-      subtitle: child.description,
+      subtitle: `${child.description} · ${child.label} · ${child.group}`,
     })),
   ]);
 
