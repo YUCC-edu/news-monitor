@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/app/ui/button";
 import { Drawer } from "@/app/ui/drawer";
 import { Skeleton } from "@/app/ui/skeleton";
@@ -15,7 +15,7 @@ import {
 
 type Overview = Parameters<typeof selectEditorialRadar>[0];
 type RepresentativeSourceRows = Parameters<typeof mapRepresentativeSources>[0];
-type RadarWithDetail = EditorialRadar & { judgmentDetail?: string };
+type RawRepresentativeSourceRow = Partial<RepresentativeSourceRows[number]>;
 
 const RANGE_TABS = [
   { id: "24h", label: "24H" },
@@ -47,11 +47,12 @@ function signalSearchUrl(signal: NonNullable<EditorialRadar["leadSignal"]>) {
   return `/search?q=${encodeURIComponent(signalTitle(signal))}`;
 }
 
-function judgmentDetail(radar: EditorialRadar) {
-  const detail = (radar as RadarWithDetail).judgmentDetail?.trim();
-  if (detail) return detail;
-  if (!radar.leadSignal) return "当前时间窗内还没有足够的跨来源动向形成主焦点，建议稍后再看。";
-  return `${signalTitle(radar.leadSignal)} 是当前最值得先看的信号，结合来源覆盖、突发强度和共识程度排序得出。`;
+function judgmentDetail(radar: EditorialRadar, range: TimelineRange) {
+  if (radar.isEmpty || !radar.leadSignal) {
+    return "当前时间窗内还没有足够的跨来源动向形成主焦点，建议稍后再看。";
+  }
+  const signalCount = 1 + radar.secondarySignals.length;
+  return `${range.toUpperCase()} 窗口内，${signalTitle(radar.leadSignal)} 是当前最值得先看的信号；本窗口还识别出 ${signalCount} 个可跟踪信号。`;
 }
 
 function DashboardSkeleton() {
@@ -87,6 +88,19 @@ function SignalReasons({ signal }: { signal: NonNullable<EditorialRadar["leadSig
   );
 }
 
+function normalizeRepresentativeRows(rows: RawRepresentativeSourceRow[]): RepresentativeSourceRows {
+  return rows.map((row, index) => ({
+    itemId: row.itemId?.trim() || `representative-${index}`,
+    title: row.title?.trim() || "暂无标题",
+    titleZh: row.titleZh?.trim() || null,
+    url: row.url?.trim() || "",
+    sourceId: row.sourceId?.trim() || "",
+    sourceName: row.sourceName?.trim() || "未知来源",
+    platform: row.platform?.trim() || "unknown",
+    sourceConfig: row.sourceConfig ?? null,
+  }));
+}
+
 function DashboardHomeInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -98,6 +112,10 @@ function DashboardHomeInner() {
   const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
   const [representativeSources, setRepresentativeSources] = useState<EditorialRepresentativeSource[]>([]);
   const [representativeLoading, setRepresentativeLoading] = useState(false);
+  const latestOverviewRef = useRef<Overview | null>(null);
+  const statsRequestSeq = useRef(0);
+  const representativeRequestSeq = useRef(0);
+  const representativeAbortRef = useRef<AbortController | null>(null);
 
   const radar = useMemo<EditorialRadar | null>(() => {
     if (!overview) return null;
@@ -105,15 +123,18 @@ function DashboardHomeInner() {
   }, [overview, range]);
 
   const selectedSignal = useMemo(
-    () =>
-      [radar?.leadSignal, ...(radar?.secondarySignals ?? [])].find((signal) => signal?.id === selectedSignalId) ??
-      radar?.leadSignal ??
-      null,
+    () => {
+      const signals = [radar?.leadSignal, ...(radar?.secondarySignals ?? [])];
+      if (selectedSignalId) return signals.find((signal) => signal?.id === selectedSignalId) ?? null;
+      return radar?.leadSignal ?? null;
+    },
     [radar, selectedSignalId],
   );
 
   const loadStats = useCallback(async () => {
-    setLoading(true);
+    const requestId = statsRequestSeq.current + 1;
+    statsRequestSeq.current = requestId;
+    setLoading(!latestOverviewRef.current);
     setError(null);
     try {
       const response = await fetch(`/api/stats?range=${range}&audience=public`, { cache: "no-store" });
@@ -121,12 +142,15 @@ function DashboardHomeInner() {
       if (!response.ok) {
         throw new Error("error" in json ? json.error || "加载总编台失败" : "加载总编台失败");
       }
+      if (requestId !== statsRequestSeq.current) return;
+      latestOverviewRef.current = json as Overview;
       setOverview(json as Overview);
     } catch (loadError) {
-      setOverview(null);
+      if (requestId !== statsRequestSeq.current) return;
+      if (!latestOverviewRef.current) setOverview(null);
       setError(loadError instanceof Error ? loadError.message : "加载总编台失败");
     } finally {
-      setLoading(false);
+      if (requestId === statsRequestSeq.current) setLoading(false);
     }
   }, [range]);
 
@@ -162,7 +186,22 @@ function DashboardHomeInner() {
     [router, searchParams],
   );
 
+  const closeMainSignal = useCallback(() => {
+    representativeRequestSeq.current += 1;
+    representativeAbortRef.current?.abort();
+    representativeAbortRef.current = null;
+    setMainSignalOpen(false);
+    setSelectedSignalId(null);
+    setRepresentativeSources([]);
+    setRepresentativeLoading(false);
+  }, []);
+
   const openMainSignal = useCallback(async (signalId: string) => {
+    representativeAbortRef.current?.abort();
+    const controller = new AbortController();
+    representativeAbortRef.current = controller;
+    const requestId = representativeRequestSeq.current + 1;
+    representativeRequestSeq.current = requestId;
     setMainSignalOpen(true);
     setSelectedSignalId(signalId);
     setRepresentativeSources([]);
@@ -170,19 +209,40 @@ function DashboardHomeInner() {
     try {
       const response = await fetch(`/api/clusters/${encodeURIComponent(signalId)}/siblings?audience=public`, {
         cache: "no-store",
+        signal: controller.signal,
       });
-      const json = (await response.json()) as { items?: RepresentativeSourceRows; error?: string } | RepresentativeSourceRows;
+      const json = (await response.json()) as { items?: RawRepresentativeSourceRow[]; error?: string } | RawRepresentativeSourceRow[];
       if (!response.ok) {
         throw new Error(Array.isArray(json) ? "加载代表来源失败" : json.error || "加载代表来源失败");
       }
+      if (requestId !== representativeRequestSeq.current || controller.signal.aborted) return;
       const rows = Array.isArray(json) ? json : Array.isArray(json.items) ? json.items : [];
-      setRepresentativeSources(mapRepresentativeSources(rows));
+      setRepresentativeSources(mapRepresentativeSources(normalizeRepresentativeRows(rows)));
     } catch {
+      if (requestId !== representativeRequestSeq.current || controller.signal.aborted) return;
       setRepresentativeSources([]);
     } finally {
-      setRepresentativeLoading(false);
+      if (requestId === representativeRequestSeq.current) {
+        representativeAbortRef.current = null;
+        setRepresentativeLoading(false);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    if (!mainSignalOpen) {
+      setRepresentativeSources([]);
+      setRepresentativeLoading(false);
+      return;
+    }
+    if (selectedSignalId && !selectedSignal) {
+      representativeRequestSeq.current += 1;
+      representativeAbortRef.current?.abort();
+      representativeAbortRef.current = null;
+      setRepresentativeSources([]);
+      setRepresentativeLoading(false);
+    }
+  }, [mainSignalOpen, selectedSignal, selectedSignalId]);
 
   return (
     <div className="today-page-shell" style={{ display: "grid", gap: 22 }}>
@@ -218,7 +278,7 @@ function DashboardHomeInner() {
                   {radar.totalJudgment}
                 </h1>
                 <p className="nm-muted" style={{ margin: 0, fontSize: 15, lineHeight: 1.7, maxWidth: 680 }}>
-                  {judgmentDetail(radar)}
+                  {judgmentDetail(radar, range)}
                 </p>
               </>
             )}
@@ -372,7 +432,7 @@ function DashboardHomeInner() {
         )}
       </section>
 
-      <Drawer open={mainSignalOpen} onClose={() => setMainSignalOpen(false)} title={selectedSignal ? signalTitle(selectedSignal) : "主焦点"} width={760}>
+      <Drawer open={mainSignalOpen} onClose={closeMainSignal} title={selectedSignal ? signalTitle(selectedSignal) : "主焦点"} width={760}>
         {selectedSignal ? (
           <div className="today-main-signal-drawer" style={{ display: "grid", gap: 18 }}>
             <section style={{ display: "grid", gap: 10 }}>
@@ -397,26 +457,36 @@ function DashboardHomeInner() {
                 </div>
               ) : representativeSources.length > 0 ? (
                 <div style={{ display: "grid", gap: 10 }}>
-                  {representativeSources.map((source) => (
-                    <div
-                      key={source.id}
-                      style={{
-                        display: "grid",
-                        gap: 7,
-                        padding: 12,
-                        border: "1px solid var(--border)",
-                        borderRadius: 10,
-                      }}
-                    >
-                      <div className="nm-muted" style={{ fontSize: 12 }}>
-                        {source.sourceName} · {source.platform}
+                  {representativeSources.map((source) => {
+                    const title = source.title.trim() || "暂无标题";
+                    const url = source.url.trim();
+                    return (
+                      <div
+                        key={source.id}
+                        style={{
+                          display: "grid",
+                          gap: 7,
+                          padding: 12,
+                          border: "1px solid var(--border)",
+                          borderRadius: 10,
+                        }}
+                      >
+                        <div className="nm-muted" style={{ fontSize: 12 }}>
+                          {source.sourceName} · {source.platform}
+                        </div>
+                        <div style={{ color: "var(--fg-0)", lineHeight: 1.5 }}>{title}</div>
+                        {url ? (
+                          <a href={url} target="_blank" rel="noreferrer" className="nm-link-inline">
+                            打开原文
+                          </a>
+                        ) : (
+                          <div className="nm-muted" style={{ fontSize: 12 }}>
+                            暂无原文链接
+                          </div>
+                        )}
                       </div>
-                      <div style={{ color: "var(--fg-0)", lineHeight: 1.5 }}>{source.title}</div>
-                      <a href={source.url} target="_blank" rel="noreferrer" className="nm-link-inline">
-                        打开原文
-                      </a>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="nm-muted">这个信号暂时没有可展示的代表来源。</div>
