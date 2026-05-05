@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executeCapability, parseCapabilityInput } from "../src/index";
+import { capabilityCatalog, executeCapability, parseCapabilityInput } from "../src/index";
 
 describe("engine capability contract", () => {
   it("parses defaults for hotspots.list", () => {
@@ -22,6 +22,16 @@ describe("engine capability contract", () => {
     expect(parsed.audience).toBe("personal");
     expect(parsed.topN).toBe(10);
     expect(parsed.minSources).toBe(1);
+  });
+
+  it("accepts the wechat draft create capability", () => {
+    const parsed = parseCapabilityInput("wechatDraft.create", {
+      intent: "最新研究解读",
+      imageProvider: "agent-image2",
+      mode: "prepare",
+    });
+    expect(parsed.intent).toBe("最新研究解读");
+    expect(capabilityCatalog["wechatDraft.create"].writesData).toBe(true);
   });
 
   it("returns invalid_input envelope for malformed sources.fetch", async () => {

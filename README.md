@@ -51,12 +51,25 @@ AI_MODE=core
 WECHAT_MP_APP_ID=
 WECHAT_MP_APP_SECRET=
 WECHAT_MP_DEFAULT_THUMB_MEDIA_ID=
+IMAGE_PROVIDER=agent-image2
+IMAGE_PROVIDER_ENDPOINT=
+IMAGE_PROVIDER_API_KEY=
+IMAGE_PROVIDER_TIMEOUT_MS=120000
 FEISHU_WEBHOOK_URL=
 FEISHU_WEBHOOK_SECRET=
 OBSIDIAN_VAULT_PATH=
 REPORT_DAILY_TIME=08:30
 REPORT_TIMEZONE=Asia/Shanghai
 ```
+
+Codex / agent 生成公众号草稿的推荐流程：
+
+```powershell
+corepack pnpm nm -- reports wechat-draft --intent "最新研究解读" --image-provider agent-image2 --json
+corepack pnpm nm -- reports wechat-draft --mode complete --report-id <id> --image cover=C:\path\cover.png --image section-1=C:\path\section.png --json
+```
+
+`agent-image2` 模式不会在项目内调用图片生成 API。Codex 读取第一步返回的 `imageSlots` 后，用 image2 生成图片，再把本地图片路径或图片 URL 回传。非 Codex 场景可以配置 `IMAGE_PROVIDER_ENDPOINT`，让项目把同样的图片 brief 发给外部 HTTP 图片服务。
 
 Docker 软件模式下，Obsidian 会挂载 `.env` 里的 `OBSIDIAN_VAULT_PATH`；如果留空，会写入 `docker/.data/obsidian`。
 

@@ -18,6 +18,7 @@ export const capabilityNameSchema = z.enum([
   "queue.status",
   "ops.reenrich",
   "reports.agentBrief",
+  "wechatDraft.create",
   "ai.status",
   "system.status",
 ]);
@@ -60,6 +61,8 @@ export const clusterSortSchema = z
   .enum(["hybrid", "sources", "items", "recency", "cohesion"])
   .default("hybrid");
 export const hotspotModeSchema = z.enum(["breaking", "consensus"]).default("consensus");
+export const wechatDraftImageProviderSchema = z.enum(["agent-image2", "http-api", "none"]).default("agent-image2");
+export const wechatDraftModeSchema = z.enum(["prepare", "complete"]).default("prepare");
 
 export const capabilityInputSchemas = {
   "sources.list": z
@@ -188,6 +191,24 @@ export const capabilityInputSchemas = {
       timezone: z.string().trim().min(1).optional().default("Asia/Shanghai"),
     })
     .default({}),
+  "wechatDraft.create": z.object({
+    intent: z.string().trim().min(1).optional().default("最近热点内容"),
+    topic: z.string().trim().min(1).optional(),
+    audience: z.enum(["public", "personal"]).optional().default("personal"),
+    range: rangeSchema.optional().default("24h"),
+    topN: z.number().int().min(1).max(30).optional().default(10),
+    minSources: z.number().int().min(1).max(20).optional().default(1),
+    imageProvider: wechatDraftImageProviderSchema.optional().default("agent-image2"),
+    mode: wechatDraftModeSchema.optional().default("prepare"),
+    reportId: z.string().uuid().optional(),
+    images: z.array(z.object({
+      slotId: z.string().trim().min(1),
+      localPath: z.string().trim().min(1).optional(),
+      url: z.string().trim().url().optional(),
+      alt: z.string().trim().min(1).optional(),
+    })).optional(),
+    allowWebSupplement: z.boolean().optional().default(false),
+  }).default({}),
   "ai.status": z.object({}).default({}),
   "system.status": z.object({}).default({}),
 } satisfies Record<CapabilityName, z.ZodTypeAny>;
@@ -217,6 +238,7 @@ export const capabilityCatalog: Record<
   "queue.status": { summary: "Get queue pressure and failure status", writesData: false },
   "ops.reenrich": { summary: "Queue re-enrichment for items", writesData: true },
   "reports.agentBrief": { summary: "Build a token-free Codex handoff for topic selection, WeChat writing, images, and publishing", writesData: false },
+  "wechatDraft.create": { summary: "Prepare or complete a WeChat draft workflow for external agents", writesData: true },
   "ai.status": { summary: "Get AI runtime mode and optional LLM status", writesData: false },
   "system.status": { summary: "Get runtime/system status", writesData: false },
 };

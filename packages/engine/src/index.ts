@@ -8,4 +8,5 @@ export * from "./service";
 export * from "./source-validation";
 export * from "./system";
 export * from "./visual-style";
+export * from "./wechat-draft-workflow";
 export * from "./writing-style";
