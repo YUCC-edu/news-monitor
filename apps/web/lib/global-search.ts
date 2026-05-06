@@ -109,6 +109,10 @@ export const DASH_NAV: Array<{ href: string; label: string; labelEn?: string; gr
     })),
   ]);
 
+export function navSearchSubtitle(entry: { subtitle?: string; labelEn?: string; group?: string }) {
+  return [entry.subtitle, entry.labelEn, entry.group].filter(Boolean).join(" · ");
+}
+
 export const SETTINGS_CATALOG: Array<{
   key: string;
   title: string;

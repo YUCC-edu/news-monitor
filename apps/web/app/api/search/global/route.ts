@@ -1,6 +1,13 @@
 import { listItems, listSources } from "@news/db";
 import { NextResponse } from "next/server";
-import { DASH_NAV, SETTINGS_CATALOG, filterAndScore, matchText, type SearchGroupType } from "@/lib/global-search";
+import {
+  DASH_NAV,
+  SETTINGS_CATALOG,
+  filterAndScore,
+  matchText,
+  navSearchSubtitle,
+  type SearchGroupType,
+} from "@/lib/global-search";
 
 type GroupPayload = {
   type: SearchGroupType;
@@ -40,7 +47,7 @@ export async function GET(request: Request) {
     id: n.href,
     type: "nav" as const,
     title: n.label,
-    subtitle: n.group,
+    subtitle: navSearchSubtitle(n),
     href: n.href,
   }));
   const settingRows = SETTINGS_CATALOG.map((s) => ({

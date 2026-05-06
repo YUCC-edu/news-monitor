@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DASH_NAV, filterAndScore, PRODUCT_NAV_SECTIONS } from "../lib/global-search";
+import { DASH_NAV, filterAndScore, navSearchSubtitle, PRODUCT_NAV_SECTIONS } from "../lib/global-search";
 
 test("filterAndScore prioritizes exact and prefix matches", () => {
   const rows = [
@@ -57,7 +57,7 @@ test("command navigation keeps english product labels for localized consumers", 
 test("command navigation can be found by English labels", () => {
   const navRows = DASH_NAV.map((entry) => ({
     title: entry.label,
-    subtitle: [entry.subtitle, entry.group].filter(Boolean).join(" · "),
+    subtitle: navSearchSubtitle(entry),
   }));
   const searchMatches = filterAndScore(navRows, "Search");
   const recommendedMatches = filterAndScore(navRows, "Recommended");
