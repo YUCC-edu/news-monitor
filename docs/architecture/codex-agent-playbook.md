@@ -20,6 +20,22 @@ The output is designed for Codex to read directly:
 - `programmaticOutputs`: WeChat draft, Feishu radar, Obsidian ledger.
 - `publishChecklist`: final manual checks before creating a WeChat draft.
 
+## Draft Command
+
+Use the draft workflow when you want Codex to drive the whole deliverable while keeping News Monitor as the stable workflow engine:
+
+```powershell
+corepack pnpm nm -- reports wechat-draft --intent "最新研究解读" --image-provider agent-image2 --json
+```
+
+The command returns a report ID, exact WeChat HTML, and `imageSlots`. Generate those slots with image2, then complete the draft:
+
+```powershell
+corepack pnpm nm -- reports wechat-draft --mode complete --report-id <id> --image cover=C:\path\cover.png --image section-1=C:\path\section.png --json
+```
+
+`agent-image2` is intentionally two-step: News Monitor does not spend image API budget in this mode. Other agents can call `POST /api/agent/wechat-draft` with the same shape and either return image URLs in `mode=complete` or configure an HTTP image provider endpoint.
+
 ## Visual Style
 
 The image brief is fixed around the current Wander reference set:
@@ -37,10 +53,10 @@ The image brief is fixed around the current Wander reference set:
 1. Run the agent brief command.
 2. Codex chooses the strongest topic using the rubric.
 3. Codex drafts the WeChat article in the learned voice.
-4. Generate images with image2 using the `imageDirection.briefs`.
-5. Paste or replace image placeholders in the report editor.
+4. Generate images with image2 using the returned `imageSlots`.
+5. Call `reports wechat-draft --mode complete` with the generated image paths or URLs.
 6. Check the exact WeChat draft preview in `/reports`.
-7. Push to WeChat draft, Feishu, and Obsidian.
+7. Push Feishu and Obsidian separately if needed.
 
 ## Channel Split
 

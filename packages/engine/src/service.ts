@@ -32,6 +32,7 @@ import { buildDailyReport } from "./reports";
 import { validateSourceConfig } from "./source-validation";
 import { buildSystemStatusSnapshot } from "./system";
 import { getEnginePresetSources, listEnginePresetPacks } from "./presets";
+import { createWechatDraftWorkflow } from "./wechat-draft-workflow";
 
 export class EngineCapabilityError extends Error {
   code: CapabilityErrorCode;
@@ -422,6 +423,11 @@ export async function executeCapability(
           trigger: "agent-brief",
         });
         data = buildCodexAgentBrief(rendered.draft);
+        break;
+      }
+      case "wechatDraft.create": {
+        const input = parseCapabilityInput("wechatDraft.create", rawInput);
+        data = await createWechatDraftWorkflow(input);
         break;
       }
       case "system.status": {

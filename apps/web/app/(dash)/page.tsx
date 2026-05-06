@@ -1,115 +1,21 @@
-﻿"use client";
+"use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/app/ui/button";
-import { useAppearance } from "@/app/ui/appearance-provider";
-import { Card } from "@/app/ui/card";
 import { Drawer } from "@/app/ui/drawer";
 import { Skeleton } from "@/app/ui/skeleton";
-import { SourceAvatar } from "@/app/ui/source-avatar";
-import { Tabs } from "@/app/ui/tabs";
-import { type TimelineBlock, type TimelineItemRecord } from "@/lib/timeline-blocks";
-import { getPreferredContent } from "@/lib/ui-preferences";
+import {
+  mapRepresentativeSources,
+  selectEditorialRadar,
+  type EditorialRadar,
+  type EditorialRepresentativeSource,
+  type TimelineRange,
+} from "@/lib/editorial-radar";
 
-type TimelineRange = "24h" | "72h" | "7d" | "30d";
-
-type ClusterSiblingRow = {
-  itemId: string;
-  title: string | null;
-  titleZh: string | null;
-  url: string | null;
-  sourceId: string;
-  sourceName: string;
-  platform: string;
-  sourceConfig: unknown;
-};
-
-type HotspotCluster = {
-  id: string;
-  topic: string | null;
-  displayTitle?: string;
-  topicState?: "named" | "generated" | "provisional" | "fallback";
-  nameConfidence?: number;
-  selectionWindow?: string;
-  whySelected?: string[];
-  titleState?: string;
-  itemCount: number;
-  lastSeenAt: string;
-  distinctSources: number;
-  weightedDistinctSources: number;
-  sourceNames: string;
-  itemsWindow: number;
-  recencyScore: number;
-  cohesionScore: number;
-  consensusScore?: number;
-  breakingScore?: number;
-  crossPlatformScore: number;
-  burstVelocity?: number;
-  xSignalScore?: number;
-  hnSignalScore?: number;
-  sourceQualityScore?: number;
-  whyConsensus?: string[];
-  whyBreaking?: string[];
-  platforms?: string[];
-};
-
-type Overview = {
-  totals: {
-    items_window: number;
-    active_sources_window: number;
-    clusters_window: number;
-  };
-  consensusClusters: HotspotCluster[];
-  breakingClusters: HotspotCluster[];
-  topicGroups?: HotspotCluster[];
-  keywordGroups?: Array<{
-    keyword: string;
-    displayTitle?: string;
-    summary?: string;
-    attentionScore?: number;
-    keywordConsistency?: number;
-    mentions?: number;
-    distinctSources?: number;
-    weightedDistinctSources?: number;
-    sourceNames?: string;
-    eventCount?: number;
-    relatedEvents?: Array<{
-      id: string;
-      topic: string | null;
-      displayTitle?: string;
-      topicState?: "named" | "generated" | "provisional" | "fallback";
-      mentions?: number;
-      distinctSources?: number;
-      sourceNames?: string;
-      latestItemAt?: string | null;
-      representativeItems?: Array<{
-        itemId: string;
-        title: string | null;
-        titleZh: string | null;
-        url: string | null;
-        sourceName: string;
-        platform: string;
-        fetchedAt: string | null;
-      }>;
-    }>;
-    representativeItems?: Array<{
-      itemId: string;
-      title: string | null;
-      titleZh: string | null;
-      url: string | null;
-      sourceName: string;
-      platform: string;
-      fetchedAt: string | null;
-    }>;
-    whyAttention?: string[];
-  }>;
-  hotspot: {
-    consensusHotspotIndex?: number;
-    breakingHotspotIndex?: number;
-    attentionIndex?: number;
-  };
-};
+type Overview = Parameters<typeof selectEditorialRadar>[0];
+type RepresentativeSourceRows = Parameters<typeof mapRepresentativeSources>[0];
+type RawRepresentativeSourceRow = Partial<RepresentativeSourceRows[number]>;
 
 const RANGE_TABS = [
   { id: "24h", label: "24H" },
@@ -117,8 +23,6 @@ const RANGE_TABS = [
   { id: "7d", label: "7D" },
   { id: "30d", label: "30D" },
 ] as const;
-
-const TIMELINE_PAGE_LIMIT = 80;
 
 function parseRange(raw: string | null): TimelineRange {
   return raw === "24h" || raw === "72h" || raw === "30d" ? raw : "7d";
@@ -135,165 +39,48 @@ function formatRelativeTime(raw: string | null | undefined) {
   return `${Math.round(diffHours / 24)} 天前`;
 }
 
-function formatWindow(windowStart: string, windowEnd: string) {
-  const start = new Date(windowStart);
-  const end = new Date(windowEnd);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return "最近窗口";
-  const date = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(start);
-  const time = new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  return `${date} ${time.format(start)} - ${time.format(end)}`;
+function signalTitle(signal: NonNullable<EditorialRadar["leadSignal"]>) {
+  return signal.displayTitle?.trim() || signal.topic?.trim() || "未命名信号";
 }
 
-function keywordTitle(keyword: NonNullable<Overview["keywordGroups"]>[number]) {
-  return keyword.displayTitle?.trim() || keyword.keyword?.trim() || "未命名关键词";
+function signalSearchUrl(signal: NonNullable<EditorialRadar["leadSignal"]>) {
+  return `/search?q=${encodeURIComponent(signalTitle(signal))}`;
 }
 
-function timelineQuery(range: TimelineRange, q: string, audience: "public" | "personal" = "personal") {
-  const params = new URLSearchParams();
-  params.set("feed", "all");
-  params.set("limit", String(TIMELINE_PAGE_LIMIT));
-  params.set("range", range);
-  params.set("rawLimit", "150");
-  params.set("audience", audience);
-  if (q.trim()) params.set("q", q.trim());
-  return params.toString();
-}
-
-function statsRange(range: TimelineRange) {
-  return range;
-}
-
-function blockTimestampMs(block: TimelineBlock<TimelineItemRecord>) {
-  if (block.type === "item") {
-    const ms = new Date(block.item.publishedAt ?? block.item.fetchedAt).getTime();
-    return Number.isFinite(ms) ? ms : 0;
+function judgmentDetail(radar: EditorialRadar, range: TimelineRange) {
+  if (radar.isEmpty || !radar.leadSignal) {
+    return "当前时间窗内还没有足够的跨来源动向形成主焦点，建议稍后再看。";
   }
-  let min = Infinity;
-  for (const item of block.items) {
-    const ms = new Date(item.publishedAt ?? item.fetchedAt).getTime();
-    if (Number.isFinite(ms) && ms < min) min = ms;
-  }
-  return Number.isFinite(min) ? min : 0;
-}
-
-function oldestBlockCursor(blocks: TimelineBlock<TimelineItemRecord>[]) {
-  let min = Infinity;
-  for (const block of blocks) {
-    const ms = blockTimestampMs(block);
-    if (ms > 0 && ms < min) min = ms;
-  }
-  return Number.isFinite(min) ? new Date(min).toISOString() : null;
-}
-
-function mergeTimelineBlocks(
-  current: TimelineBlock<TimelineItemRecord>[],
-  incoming: TimelineBlock<TimelineItemRecord>[],
-) {
-  if (incoming.length === 0) return current;
-  const merged = [...current];
-  const indexById = new Map<string, number>();
-  for (let i = 0; i < merged.length; i += 1) indexById.set(merged[i].id, i);
-
-  const mergeItems = (existing: TimelineItemRecord[], next: TimelineItemRecord[]) => {
-    const byId = new Map<string, TimelineItemRecord>();
-    for (const item of existing) byId.set(item.id, item);
-    for (const item of next) byId.set(item.id, item);
-    return [...byId.values()].sort((a, b) => {
-      const aMs = new Date(a.publishedAt ?? a.fetchedAt).getTime();
-      const bMs = new Date(b.publishedAt ?? b.fetchedAt).getTime();
-      return bMs - aMs;
-    });
-  };
-
-  for (const block of incoming) {
-    const existingIndex = indexById.get(block.id);
-    if (existingIndex == null) {
-      merged.push(block);
-      indexById.set(block.id, merged.length - 1);
-      continue;
-    }
-    const existing = merged[existingIndex];
-    if (existing.type === "collapsed-source-group" && block.type === "collapsed-source-group") {
-      const items = mergeItems(existing.items, block.items);
-      merged[existingIndex] = {
-        ...existing,
-        itemCount: items.length,
-        items,
-        latestItem: items[0] ?? existing.latestItem,
-        windowStart: new Date(
-          Math.min(new Date(existing.windowStart).getTime() || Infinity, new Date(block.windowStart).getTime() || Infinity),
-        ).toISOString(),
-        windowEnd: new Date(
-          Math.max(new Date(existing.windowEnd).getTime() || 0, new Date(block.windowEnd).getTime() || 0),
-        ).toISOString(),
-      };
-    } else {
-      merged[existingIndex] = block;
-    }
-  }
-
-  return merged;
+  const signalCount = 1 + radar.secondarySignals.length;
+  return `${range.toUpperCase()} 窗口内，${signalTitle(radar.leadSignal)} 是当前最值得先看的信号；本窗口还识别出 ${signalCount} 个可跟踪信号。`;
 }
 
 function DashboardSkeleton() {
   return (
-    <div style={{ display: "grid", gap: 14 }}>
-      <Skeleton style={{ width: "100%", height: 220, borderRadius: 12 }} />
-      <Skeleton style={{ width: "100%", height: 260, borderRadius: 12 }} />
-      <Skeleton style={{ width: "100%", height: 320, borderRadius: 12 }} />
+    <div style={{ display: "grid", gap: 16 }}>
+      <Skeleton style={{ width: "70%", height: 36, borderRadius: 8 }} />
+      <Skeleton style={{ width: "100%", height: 170, borderRadius: 12 }} />
+      <Skeleton style={{ width: "100%", height: 120, borderRadius: 12 }} />
     </div>
   );
 }
 
-function KeywordEvents({
-  keyword,
-  limit,
-  onOpenEvent,
-}: {
-  keyword: NonNullable<Overview["keywordGroups"]>[number];
-  limit: number;
-  onOpenEvent: (event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) => void;
-}) {
-  const events = (keyword.relatedEvents ?? []).slice(0, limit);
-  if (events.length === 0) {
-    const item = keyword.representativeItems?.[0];
-    return item ? (
-      <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-        代表动态：{item.titleZh || item.title || "暂无标题"} · {item.sourceName}
-      </div>
-    ) : null;
-  }
+function SignalReasons({ signal }: { signal: NonNullable<EditorialRadar["leadSignal"]> }) {
   return (
-    <div style={{ display: "grid", gap: 8 }}>
-      {events.map((event) => (
+    <div className="today-signal-reasons" style={{ display: "grid", gap: 10 }}>
+      {signal.reasons.slice(0, 3).map((reason) => (
         <div
-          key={event.id}
+          key={reason.label}
           style={{
             display: "grid",
-            gap: 6,
+            gap: 4,
             padding: "10px 0",
             borderTop: "1px solid var(--border)",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "start" }}>
-            <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
-              <div style={{ color: "var(--fg-0)", fontWeight: 600, lineHeight: 1.4 }}>
-                {event.displayTitle || event.topic || keywordTitle(keyword)}
-              </div>
-              <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                {event.distinctSources ?? 0} 个来源 · {event.mentions ?? 0} 次提及 · {formatRelativeTime(event.latestItemAt)}
-              </div>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => onOpenEvent(event)}>
-              查看来源
-            </Button>
-          </div>
-          <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-            {event.sourceNames || event.representativeItems?.map((item) => item.sourceName).join(" / ") || "来源列表不可用"}
+          <div style={{ color: "var(--fg-0)", fontSize: 13, fontWeight: 650 }}>{reason.label}</div>
+          <div className="nm-muted" style={{ fontSize: 13, lineHeight: 1.55 }}>
+            {reason.text}
           </div>
         </div>
       ))}
@@ -301,184 +88,75 @@ function KeywordEvents({
   );
 }
 
-function KeywordBoard({
-  keywords,
-  onOpenEvent,
-}: {
-  keywords: NonNullable<Overview["keywordGroups"]>;
-  onOpenEvent: (event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) => void;
-}) {
-  const lead = keywords[0] ?? null;
-  const rest = keywords.slice(1, 9);
-  const totalMentions = keywords.reduce((sum, keyword) => sum + (keyword.mentions ?? 0), 0);
-
-  return (
-    <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={{ color: "var(--fg-0)", fontSize: 20, fontWeight: 700 }}>高频关键词</div>
-          <div className="nm-muted" style={{ fontSize: 13 }}>
-            来自当前时间窗内所有已添加信源抓取内容的关键词汇总，按出现频次排序。
-          </div>
-        </div>
-        <span className="nm-chip">
-          {keywords.length} 个关键词 · {totalMentions} 次提及
-        </span>
-      </div>
-
-      {lead ? (
-        <>
-          <Card style={{ padding: 18, display: "grid", gap: 12, minHeight: 240, borderColor: "var(--border-strong)" }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span className="nm-chip">{lead.mentions ?? 0} 次提及</span>
-              <span className="nm-muted" style={{ fontSize: 12 }}>{lead.distinctSources ?? 0} 个来源</span>
-              <span className="nm-muted" style={{ fontSize: 12 }}>{lead.weightedDistinctSources?.toFixed(2) ?? "0.00"} 加权来源</span>
-            </div>
-            <h2 style={{ margin: 0, color: "var(--fg-0)", fontSize: 28, lineHeight: 1.18 }}>
-              {keywordTitle(lead)}
-            </h2>
-            <div className="nm-muted" style={{ lineHeight: 1.7 }}>
-              {lead.summary ||
-                lead.whyAttention?.join(" · ") ||
-                `关键词一致性 ${lead.keywordConsistency?.toFixed(2) ?? "0.00"} · 关注分 ${lead.attentionScore?.toFixed(2) ?? "0.00"}`}
-            </div>
-            <KeywordEvents keyword={lead} limit={3} onOpenEvent={onOpenEvent} />
-            <div className="nm-muted" style={{ fontSize: 12 }}>{lead.sourceNames || "来源列表不可用"}</div>
-          </Card>
-
-          {rest.length > 0 ? (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 }}>
-              {rest.map((keyword, index) => (
-                <Card key={`${keyword.keyword}-${index}`} style={{ padding: 14, display: "grid", gap: 8, minHeight: 170 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                    <span className="nm-muted" style={{ fontSize: 11 }}>{keyword.mentions ?? 0} 次提及</span>
-                    <span className="nm-muted" style={{ fontSize: 11 }}>{keyword.distinctSources ?? 0} 个来源</span>
-                  </div>
-                  <div style={{ color: "var(--fg-0)", fontWeight: 650, lineHeight: 1.45 }}>{keywordTitle(keyword)}</div>
-                  <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    {keyword.summary ||
-                      keyword.whyAttention?.slice(0, 2).join(" · ") ||
-                      `关键词一致性 ${keyword.keywordConsistency?.toFixed(2) ?? "0.00"} · 关注分 ${keyword.attentionScore?.toFixed(2) ?? "0.00"}`}
-                  </div>
-                  <KeywordEvents keyword={keyword} limit={1} onOpenEvent={onOpenEvent} />
-                  <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                    {keyword.eventCount ?? 0} 个事件 · {keyword.sourceNames || "来源列表不可用"}
-                  </div>
-                </Card>
-              ))}
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <Card style={{ padding: 18 }}>
-          <div style={{ color: "var(--fg-0)", fontWeight: 600, marginBottom: 6 }}>暂无高频关键词</div>
-          <div className="nm-muted">当前时间窗内还没有足够的抓取动态形成关键词汇总。</div>
-        </Card>
-      )}
-    </div>
-  );
+function normalizeRepresentativeRows(rows: RawRepresentativeSourceRow[]): RepresentativeSourceRows {
+  return rows.map((row, index) => ({
+    itemId: row.itemId?.trim() || `representative-${index}`,
+    title: row.title?.trim() || "暂无标题",
+    titleZh: row.titleZh?.trim() || null,
+    url: row.url?.trim() || "",
+    sourceId: row.sourceId?.trim() || "",
+    sourceName: row.sourceName?.trim() || "未知来源",
+    platform: row.platform?.trim() || "unknown",
+    sourceConfig: row.sourceConfig ?? null,
+  }));
 }
 
 function DashboardHomeInner() {
-  const { locale } = useAppearance();
   const router = useRouter();
   const searchParams = useSearchParams();
   const range = parseRange(searchParams.get("range"));
-  const q = (searchParams.get("q") ?? "").trim();
-  const [queryInput, setQueryInput] = useState(q);
   const [overview, setOverview] = useState<Overview | null>(null);
-  const [timelineBlocks, setTimelineBlocks] = useState<TimelineBlock<TimelineItemRecord>[]>([]);
-  const [timelineCursor, setTimelineCursor] = useState<string | null>(null);
-  const [hasMoreTimeline, setHasMoreTimeline] = useState(true);
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  const [siblingsOpen, setSiblingsOpen] = useState(false);
-  const [siblingsRows, setSiblingsRows] = useState<ClusterSiblingRow[]>([]);
-  const [siblingsLoading, setSiblingsLoading] = useState(false);
-  const [siblingsTitle, setSiblingsTitle] = useState("其他来源补充");
-  const timelineBlocksRef = useRef(timelineBlocks);
-  const timelineCursorRef = useRef<string | null>(timelineCursor);
+  const [mainSignalOpen, setMainSignalOpen] = useState(false);
+  const [selectedSignalId, setSelectedSignalId] = useState<string | null>(null);
+  const [representativeSources, setRepresentativeSources] = useState<EditorialRepresentativeSource[]>([]);
+  const [representativeLoading, setRepresentativeLoading] = useState(false);
+  const latestOverviewRef = useRef<Overview | null>(null);
+  const statsRequestSeq = useRef(0);
+  const representativeRequestSeq = useRef(0);
+  const representativeAbortRef = useRef<AbortController | null>(null);
 
-  const setFilters = useCallback(
-    (next: { range?: TimelineRange; q?: string }) => {
-      const params = new URLSearchParams(searchParams.toString());
-      const nextRange = next.range ?? range;
-      params.set("range", nextRange);
-      const nextQuery = (next.q ?? q).trim();
-      if (nextQuery) params.set("q", nextQuery);
-      else params.delete("q");
-      router.replace(`/?${params.toString()}`, { scroll: false });
+  const radar = useMemo<EditorialRadar | null>(() => {
+    if (!overview) return null;
+    return selectEditorialRadar(overview, range);
+  }, [overview, range]);
+
+  const selectedSignal = useMemo(
+    () => {
+      const signals = [radar?.leadSignal, ...(radar?.secondarySignals ?? [])];
+      if (selectedSignalId) return signals.find((signal) => signal?.id === selectedSignalId) ?? null;
+      return radar?.leadSignal ?? null;
     },
-    [q, range, router, searchParams],
+    [radar, selectedSignalId],
   );
 
-  useEffect(() => {
-    setQueryInput(q);
-  }, [q]);
-
-  useEffect(() => {
-    timelineBlocksRef.current = timelineBlocks;
-  }, [timelineBlocks]);
-
-  useEffect(() => {
-    timelineCursorRef.current = timelineCursor;
-  }, [timelineCursor]);
-
-  const load = useCallback(
-    async (append = false) => {
-      if (append) setLoadingMore(true);
-      else setLoading(true);
-      setError(null);
-      try {
-        const timelineParams = new URLSearchParams(timelineQuery(range, q, "public"));
-        const before = timelineCursorRef.current;
-        if (append && before) timelineParams.set("before", before);
-        const [statsResponse, timelineResponse] = await Promise.all([
-          fetch(`/api/stats?range=${statsRange(range)}&audience=public`, { cache: "no-store" }),
-          fetch(`/api/items?${timelineParams.toString()}`, { cache: "no-store" }),
-        ]);
-        const [statsJson, timelineJson] = await Promise.all([
-          statsResponse.json() as Promise<Overview | { error?: string }>,
-          timelineResponse.json() as Promise<TimelineBlock<TimelineItemRecord>[] | { error?: string }>,
-        ]);
-        if (!statsResponse.ok) {
-          throw new Error("error" in statsJson ? statsJson.error || "加载值得关注失败" : "加载值得关注失败");
-        }
-        if (!timelineResponse.ok) {
-          throw new Error(
-            typeof timelineJson === "object" && timelineJson && "error" in timelineJson
-              ? timelineJson.error || "加载时间流失败"
-              : "加载时间流失败",
-          );
-        }
-        setOverview(statsJson as Overview);
-        const incoming = Array.isArray(timelineJson) ? timelineJson : [];
-        const merged = append ? mergeTimelineBlocks(timelineBlocksRef.current, incoming) : incoming;
-        setTimelineBlocks(merged);
-        setTimelineCursor(oldestBlockCursor(merged));
-        setHasMoreTimeline(incoming.length > 0);
-      } catch (loadError) {
-        setOverview(null);
-        setTimelineBlocks([]);
-        setTimelineCursor(null);
-        setHasMoreTimeline(false);
-        setError(loadError instanceof Error ? loadError.message : "加载总编台失败");
-      } finally {
-        if (append) setLoadingMore(false);
-        else setLoading(false);
+  const loadStats = useCallback(async () => {
+    const requestId = statsRequestSeq.current + 1;
+    statsRequestSeq.current = requestId;
+    setLoading(!latestOverviewRef.current);
+    setError(null);
+    try {
+      const response = await fetch(`/api/stats?range=${range}&audience=public`, { cache: "no-store" });
+      const json = (await response.json()) as Overview | { error?: string };
+      if (!response.ok) {
+        throw new Error("error" in json ? json.error || "加载总编台失败" : "加载总编台失败");
       }
-    },
-    [q, range],
-  );
+      if (requestId !== statsRequestSeq.current) return;
+      latestOverviewRef.current = json as Overview;
+      setOverview(json as Overview);
+    } catch (loadError) {
+      if (requestId !== statsRequestSeq.current) return;
+      if (!latestOverviewRef.current) setOverview(null);
+      setError(loadError instanceof Error ? loadError.message : "加载总编台失败");
+    } finally {
+      if (requestId === statsRequestSeq.current) setLoading(false);
+    }
+  }, [range]);
 
   useEffect(() => {
-    setTimelineBlocks([]);
-    setTimelineCursor(null);
-    setHasMoreTimeline(true);
-    void load(false);
-  }, [load, q, range]);
+    void loadStats();
+  }, [loadStats]);
 
   useEffect(() => {
     const source = new EventSource("/api/stream");
@@ -486,7 +164,7 @@ function DashboardHomeInner() {
     const refetch = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        void load();
+        void loadStats();
       }, 300);
     };
     source.addEventListener("item.created", refetch);
@@ -497,355 +175,368 @@ function DashboardHomeInner() {
       if (timer) clearTimeout(timer);
       source.close();
     };
-  }, [load]);
+  }, [loadStats]);
 
-  const summary = useMemo(() => {
-    const collapsedGroups = timelineBlocks.filter((block) => block.type === "collapsed-source-group");
-    const keywordGroups = overview?.keywordGroups ?? [];
-    const collapsedItems = collapsedGroups.reduce((sum, block) => sum + block.itemCount, 0);
-    const keywordMentions = keywordGroups.reduce((sum, keyword) => sum + (keyword.mentions ?? 0), 0);
-    return {
-      totalItems: overview?.totals.items_window ?? 0,
-      activeSources: overview?.totals.active_sources_window ?? 0,
-      keywordCount: keywordGroups.length,
-      keywordMentions,
-      collapsedGroups: collapsedGroups.length,
-      collapsedItems,
-    };
-  }, [overview, timelineBlocks]);
+  const setRange = useCallback(
+    (nextRange: TimelineRange) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("range", nextRange);
+      router.replace(`/?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
 
-  async function openSiblings(cluster: HotspotCluster, audience: "public" | "personal" = "public") {
-    setSiblingsOpen(true);
-    setSiblingsLoading(true);
-    setSiblingsRows([]);
-    setSiblingsTitle(cluster.topic?.trim() || `来源补充 · ${cluster.id.slice(0, 8)}`);
+  const closeMainSignal = useCallback(() => {
+    representativeRequestSeq.current += 1;
+    representativeAbortRef.current?.abort();
+    representativeAbortRef.current = null;
+    setMainSignalOpen(false);
+    setSelectedSignalId(null);
+    setRepresentativeSources([]);
+    setRepresentativeLoading(false);
+  }, []);
+
+  const openMainSignal = useCallback(async (signalId: string) => {
+    representativeAbortRef.current?.abort();
+    const controller = new AbortController();
+    representativeAbortRef.current = controller;
+    const requestId = representativeRequestSeq.current + 1;
+    representativeRequestSeq.current = requestId;
+    setMainSignalOpen(true);
+    setSelectedSignalId(signalId);
+    setRepresentativeSources([]);
+    setRepresentativeLoading(true);
     try {
-      const response = await fetch(`/api/clusters/${cluster.id}/siblings?audience=${audience}`, {
+      const response = await fetch(`/api/clusters/${encodeURIComponent(signalId)}/siblings?audience=public`, {
         cache: "no-store",
+        signal: controller.signal,
       });
-      const json = (await response.json()) as { items?: ClusterSiblingRow[]; error?: string };
-      if (!response.ok) throw new Error(json.error || "加载其他来源失败");
-      setSiblingsRows(Array.isArray(json.items) ? json.items : []);
+      const json = (await response.json()) as { items?: RawRepresentativeSourceRow[]; error?: string } | RawRepresentativeSourceRow[];
+      if (!response.ok) {
+        throw new Error(Array.isArray(json) ? "加载代表来源失败" : json.error || "加载代表来源失败");
+      }
+      if (requestId !== representativeRequestSeq.current || controller.signal.aborted) return;
+      const rows = Array.isArray(json) ? json : Array.isArray(json.items) ? json.items : [];
+      setRepresentativeSources(mapRepresentativeSources(normalizeRepresentativeRows(rows)));
     } catch {
-      setSiblingsRows([]);
+      if (requestId !== representativeRequestSeq.current || controller.signal.aborted) return;
+      setRepresentativeSources([]);
     } finally {
-      setSiblingsLoading(false);
+      if (requestId === representativeRequestSeq.current) {
+        representativeAbortRef.current = null;
+        setRepresentativeLoading(false);
+      }
     }
-  }
+  }, []);
 
-  function openKeywordEvent(event: NonNullable<NonNullable<Overview["keywordGroups"]>[number]["relatedEvents"]>[number]) {
-    void openSiblings(
-      {
-        id: event.id,
-        topic: event.displayTitle || event.topic,
-        itemCount: event.mentions ?? 0,
-        lastSeenAt: event.latestItemAt ?? new Date().toISOString(),
-        distinctSources: event.distinctSources ?? 1,
-        weightedDistinctSources: event.distinctSources ?? 1,
-        sourceNames: event.sourceNames ?? "",
-        itemsWindow: event.mentions ?? 0,
-        recencyScore: 0,
-        cohesionScore: 0,
-        crossPlatformScore: 0,
-      },
-      "public",
-    );
-  }
+  useEffect(() => {
+    if (!mainSignalOpen) {
+      setRepresentativeSources([]);
+      setRepresentativeLoading(false);
+      return;
+    }
+    if (selectedSignalId && !selectedSignal) {
+      representativeRequestSeq.current += 1;
+      representativeAbortRef.current?.abort();
+      representativeAbortRef.current = null;
+      setRepresentativeSources([]);
+      setRepresentativeLoading(false);
+    }
+  }, [mainSignalOpen, selectedSignal, selectedSignalId]);
 
   return (
-    <div style={{ display: "grid", gap: 22 }}>
-      <section
-        style={{
-          display: "grid",
-          gap: 16,
-          padding: 18,
-          border: "1px solid var(--border)",
-          borderRadius: 12,
-          background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)",
-        }}
-      >
-        <div style={{ display: "grid", gap: 8 }}>
-          <h1 style={{ margin: 0, fontSize: 30, lineHeight: 1.12, color: "var(--fg-0)" }}>总编台</h1>
-        </div>
-
-        <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
-          <Tabs
-            tabs={RANGE_TABS.map((tab) => ({ id: tab.id, label: tab.label }))}
-            value={range}
-            onChange={(next) => setFilters({ range: next as TimelineRange })}
-          />
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              setFilters({ q: queryInput });
-            }}
-            style={{ display: "flex", gap: 8, flexWrap: "wrap", minWidth: "min(100%, 420px)" }}
-          >
-            <input
-              className="nm-input"
-              value={queryInput}
-              onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="搜索事件、信源、关键词"
-              style={{ minWidth: 260, flex: 1 }}
-            />
-            <Button variant="primary" type="submit">
-              搜索
-            </Button>
-          </form>
-        </div>
-
+    <div className="today-page-shell" style={{ display: "grid", gap: 22 }}>
+      <section className="today-page" style={{ display: "grid", gap: 22 }}>
         <div
+          className="today-page-header"
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: 12,
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 16,
+            alignItems: "start",
+            flexWrap: "wrap",
           }}
         >
-          {[
-            { label: "窗口条目", value: summary.totalItems },
-            { label: "活跃信源", value: summary.activeSources },
-            { label: "高频关键词", value: summary.keywordCount },
-            { label: "关键词提及", value: summary.keywordMentions },
-            { label: "已折叠信源", value: summary.collapsedGroups },
-            { label: "折叠条目", value: summary.collapsedItems },
-          ].map((metric) => (
+          <div style={{ display: "grid", gap: 10, maxWidth: 760 }}>
             <div
-              key={metric.label}
+              className="today-kicker"
               style={{
-                minWidth: 118,
-                padding: "10px 12px",
+                color: "var(--fg-3)",
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: 1.1,
+                textTransform: "uppercase",
+              }}
+            >
+              Editorial Radar · {range.toUpperCase()}
+            </div>
+            {loading || !radar ? (
+              <Skeleton style={{ width: "min(100%, 620px)", height: 46, borderRadius: 8 }} />
+            ) : (
+              <>
+                <h1 style={{ margin: 0, color: "var(--fg-0)", fontSize: 34, lineHeight: 1.12 }}>
+                  {radar.totalJudgment}
+                </h1>
+                <p className="nm-muted" style={{ margin: 0, fontSize: 15, lineHeight: 1.7, maxWidth: 680 }}>
+                  {judgmentDetail(radar, range)}
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="today-range-tabs" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {RANGE_TABS.map((tab) => (
+              <Button
+                key={tab.id}
+                size="sm"
+                variant="ghost"
+                onClick={() => setRange(tab.id)}
+                style={{
+                  borderColor: range === tab.id ? "var(--border-strong)" : "var(--border)",
+                  color: range === tab.id ? "var(--fg-0)" : "var(--fg-2)",
+                }}
+              >
+                {tab.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {error ? (
+          <div
+            className="today-error"
+            style={{
+              padding: 16,
+              border: "1px solid var(--border-strong)",
+              borderRadius: 12,
+            }}
+          >
+            <div style={{ color: "var(--fg-0)", fontWeight: 650, marginBottom: 6 }}>加载失败</div>
+            <div className="nm-muted">{error}</div>
+          </div>
+        ) : null}
+
+        {loading || !radar ? (
+          <DashboardSkeleton />
+        ) : radar.leadSignal ? (
+          <>
+            <article
+              className="today-main-signal"
+              style={{
+                display: "grid",
+                gap: 16,
+                padding: 20,
                 border: "1px solid var(--border)",
-                borderRadius: 10,
+                borderRadius: 12,
                 background: "rgba(255,255,255,0.02)",
               }}
             >
-              <div className="nm-muted" style={{ fontSize: 11 }}>
-                {metric.label}
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ color: "var(--fg-0)", fontSize: 12, fontWeight: 750, letterSpacing: 1 }}>
+                  MAIN SIGNAL
+                </span>
+                <span className="nm-muted" style={{ fontSize: 12 }}>
+                  {radar.leadSignal.distinctSources} 个来源
+                </span>
               </div>
-              <div style={{ fontSize: 22, color: "var(--fg-0)", fontWeight: 700 }}>{metric.value}</div>
-            </div>
-          ))}
-        </div>
-      </section>
+              <div style={{ display: "grid", gap: 10, maxWidth: 760 }}>
+                <h2 style={{ margin: 0, color: "var(--fg-0)", fontSize: 28, lineHeight: 1.18 }}>
+                  {signalTitle(radar.leadSignal)}
+                </h2>
+                <p className="nm-muted" style={{ margin: 0, fontSize: 15, lineHeight: 1.7 }}>
+                  {radar.leadSignal.editorialTake}
+                </p>
+              </div>
+              <SignalReasons signal={radar.leadSignal} />
+              <div className="today-action-row" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <Button variant="primary" onClick={() => void openMainSignal(radar.leadSignal!.id)}>
+                  继续阅读
+                </Button>
+                <Button variant="ghost" onClick={() => router.push("/reports")}>
+                  生成简报
+                </Button>
+                <Button variant="ghost" onClick={() => router.push(signalSearchUrl(radar.leadSignal!))}>
+                  追踪主题
+                </Button>
+                <Button variant="ghost" onClick={() => router.push("/sources")}>
+                  查看来源
+                </Button>
+              </div>
+            </article>
 
-      {error ? (
-        <Card style={{ borderColor: "var(--border-strong)", padding: 18 }}>
-          <div style={{ color: "var(--fg-0)", fontWeight: 600, marginBottom: 6 }}>加载失败</div>
-          <div className="nm-muted">{error}</div>
-        </Card>
-      ) : null}
-
-      {loading || !overview ? (
-        <DashboardSkeleton />
-      ) : (
-        <>
-          <section
+            <section className="today-secondary-signals" style={{ display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                <h2 style={{ margin: 0, color: "var(--fg-0)", fontSize: 18 }}>次级信号</h2>
+                <span className="nm-muted" style={{ fontSize: 12 }}>
+                  最多展示 4 条
+                </span>
+              </div>
+              {radar.secondarySignals.length > 0 ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 12,
+                  }}
+                >
+                  {radar.secondarySignals.slice(0, 4).map((signal) => (
+                    <button
+                      key={signal.id}
+                      type="button"
+                      className="today-secondary-signal"
+                      onClick={() => void openMainSignal(signal.id)}
+                      style={{
+                        textAlign: "left",
+                        display: "grid",
+                        gap: 8,
+                        padding: 14,
+                        border: "1px solid var(--border)",
+                        borderRadius: 10,
+                        background: "transparent",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div className="nm-muted" style={{ fontSize: 12 }}>
+                        {signal.distinctSources} 个来源 · {formatRelativeTime(signal.lastSeenAt)}
+                      </div>
+                      <div style={{ color: "var(--fg-0)", fontWeight: 650, lineHeight: 1.45 }}>{signalTitle(signal)}</div>
+                      <div className="nm-muted" style={{ fontSize: 12, lineHeight: 1.55 }}>
+                        {signal.editorialTake}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="nm-muted" style={{ padding: "4px 0" }}>
+                  当前没有更多可排序的次级信号。
+                </div>
+              )}
+            </section>
+          </>
+        ) : (
+          <div
+            className="today-empty-state"
             style={{
               display: "grid",
-              gap: 16,
+              gap: 8,
+              padding: 20,
+              border: "1px solid var(--border)",
+              borderRadius: 12,
             }}
           >
-            <KeywordBoard keywords={overview.keywordGroups ?? []} onOpenEvent={openKeywordEvent} />
-          </section>
-
-          <section style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "grid", gap: 4 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  letterSpacing: 1.2,
-                  textTransform: "uppercase",
-                  color: "var(--fg-3)",
-                }}
-              >
-                时间流
-              </div>
-              <div style={{ color: "var(--fg-0)", fontSize: 22, fontWeight: 700 }}>全部抓取动态</div>
+            <div style={{ color: "var(--fg-0)", fontSize: 20, fontWeight: 700 }}>暂无主信号</div>
+            <div className="nm-muted" style={{ lineHeight: 1.7 }}>
+              当前时间窗内还没有足够的来源覆盖或突发强度。你可以切换时间范围，或等待下一轮抓取更新。
             </div>
+          </div>
+        )}
+      </section>
 
-            <div style={{ display: "grid", gap: 12 }}>
-              {timelineBlocks.map((block) =>
-                block.type === "collapsed-source-group" ? (
-                  <Card
-                    key={block.id}
+      <Drawer open={mainSignalOpen} onClose={closeMainSignal} title={selectedSignal ? signalTitle(selectedSignal) : "主焦点"} width={760}>
+        {selectedSignal ? (
+          <div className="today-main-signal-drawer" style={{ display: "grid", gap: 18 }}>
+            <section style={{ display: "grid", gap: 10 }}>
+              <div className="nm-muted" style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>
+                Editorial Take
+              </div>
+              <p style={{ margin: 0, color: "var(--fg-0)", lineHeight: 1.7 }}>{selectedSignal.editorialTake}</p>
+            </section>
+
+            <section style={{ display: "grid", gap: 10 }}>
+              <h3 style={{ margin: 0, color: "var(--fg-0)", fontSize: 16 }}>为什么重要</h3>
+              <SignalReasons signal={selectedSignal} />
+            </section>
+
+            <section style={{ display: "grid", gap: 10 }}>
+              <h3 style={{ margin: 0, color: "var(--fg-0)", fontSize: 16 }}>代表来源</h3>
+              {representativeLoading ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <Skeleton key={index} style={{ width: "100%", height: 76, borderRadius: 10 }} />
+                  ))}
+                </div>
+              ) : representativeSources.length > 0 ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {representativeSources.map((source) => {
+                    const title = source.title.trim() || "暂无标题";
+                    const url = source.url.trim();
+                    return (
+                      <div
+                        key={source.id}
+                        style={{
+                          display: "grid",
+                          gap: 7,
+                          padding: 12,
+                          border: "1px solid var(--border)",
+                          borderRadius: 10,
+                        }}
+                      >
+                        <div className="nm-muted" style={{ fontSize: 12 }}>
+                          {source.sourceName} · {source.platform}
+                        </div>
+                        <div style={{ color: "var(--fg-0)", lineHeight: 1.5 }}>{title}</div>
+                        {url ? (
+                          <a href={url} target="_blank" rel="noreferrer" className="nm-link-inline">
+                            打开原文
+                          </a>
+                        ) : (
+                          <div className="nm-muted" style={{ fontSize: 12 }}>
+                            暂无原文链接
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="nm-muted">这个信号暂时没有可展示的代表来源。</div>
+              )}
+            </section>
+
+            <section style={{ display: "grid", gap: 10 }}>
+              <h3 style={{ margin: 0, color: "var(--fg-0)", fontSize: 16 }}>迷你时间线</h3>
+              <div style={{ display: "grid", gap: 8 }}>
+                {[
+                  { label: "观察窗口", value: selectedSignal.range.toUpperCase() },
+                  { label: "最近更新", value: formatRelativeTime(selectedSignal.lastSeenAt) },
+                  { label: "来源覆盖", value: `${selectedSignal.distinctSources} 个来源 · ${selectedSignal.itemsWindow} 条内容` },
+                ].map((item) => (
+                  <div
+                    key={item.label}
                     style={{
-                      padding: 16,
-                      display: "grid",
-                      gap: 14,
-                      borderColor: expandedGroups[block.id] ? "var(--border-strong)" : "var(--border)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      padding: "9px 0",
+                      borderTop: "1px solid var(--border)",
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                        <SourceAvatar
-                          source={{
-                            kind: block.platform,
-                            name: block.sourceName,
-                            config: block.sourceConfig as Record<string, unknown> | null,
-                          }}
-                          size={38}
-                        />
-                        <div style={{ display: "grid", gap: 4 }}>
-                          <div style={{ color: "var(--fg-0)", fontWeight: 600 }}>{block.sourceName}</div>
-                          <div className="nm-muted" style={{ fontSize: 12 }}>
-                            {formatWindow(block.windowStart, block.windowEnd)} · {block.itemCount} 条更新
-                          </div>
-                        </div>
-                      </div>
-                  <Button
-                        size="sm"
-                        onClick={() =>
-                          setExpandedGroups((current) => ({
-                            ...current,
-                            [block.id]: !current[block.id],
-                          }))
-                        }
-                      >
-                        {expandedGroups[block.id] ? "收起" : "展开"}
-                      </Button>
-                    </div>
+                    <span className="nm-muted" style={{ fontSize: 13 }}>
+                      {item.label}
+                    </span>
+                    <span style={{ color: "var(--fg-0)", fontSize: 13, textAlign: "right" }}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
 
-                    <div style={{ color: "var(--fg-0)", fontSize: 18, lineHeight: 1.45, fontWeight: 600 }}>
-                      {getPreferredContent(block.latestItem, locale, "title") || "暂无标题"}
-                    </div>
-
-                    {expandedGroups[block.id] ? (
-                      <div style={{ display: "grid", gap: 10 }}>
-                        {block.items.map((item) => (
-                          <div
-                            key={item.id}
-                            style={{
-                              paddingTop: 10,
-                              borderTop: "1px solid var(--border)",
-                              display: "grid",
-                              gap: 6,
-                            }}
-                          >
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                              <div style={{ color: "var(--fg-0)", fontWeight: 500, lineHeight: 1.5 }}>
-                                {getPreferredContent(item, locale, "title") || "暂无标题"}
-                              </div>
-                              <div className="nm-muted" style={{ fontSize: 12 }}>
-                                {formatRelativeTime(item.publishedAt ?? item.fetchedAt)}
-                              </div>
-                            </div>
-                            {item.url ? (
-                              <a href={item.url} target="_blank" rel="noreferrer" className="nm-link-inline">
-                                打开原文
-                              </a>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </Card>
-                ) : (
-                  <Card key={block.id} style={{ padding: 16, display: "grid", gap: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                        <SourceAvatar
-                          source={{
-                            kind: block.item.platform,
-                            name: block.item.sourceName,
-                            config: block.item.sourceConfig as Record<string, unknown> | null,
-                          }}
-                          size={34}
-                        />
-                        <div>
-                          <div style={{ color: "var(--fg-0)", fontWeight: 600 }}>{block.item.sourceName}</div>
-                          <div className="nm-muted" style={{ fontSize: 12 }}>
-                            {formatRelativeTime(block.item.publishedAt ?? block.item.fetchedAt)}
-                          </div>
-                        </div>
-                      </div>
-                      {block.item.clusterId && (block.item.relatedSourceCount ?? block.item.relatedCount ?? 1) > 1 ? (
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            void openSiblings(
-                              {
-                                id: block.item.clusterId!,
-                                topic: block.item.clusterTopic ?? null,
-                                itemCount: block.item.clusterItemCount ?? 0,
-                                lastSeenAt: block.item.fetchedAt,
-                                distinctSources: block.item.relatedSourceCount ?? 1,
-                                weightedDistinctSources: block.item.relatedSourceCount ?? 1,
-                                sourceNames: block.item.sourceName,
-                                itemsWindow: block.item.clusterItemCount ?? 0,
-                                recencyScore: 0,
-                                cohesionScore: 0,
-                                crossPlatformScore: 0,
-                              },
-                              "public",
-                            )
-                          }
-                        >
-                          查看来源
-                        </Button>
-                      ) : null}
-                    </div>
-                    <div style={{ color: "var(--fg-0)", fontSize: 18, lineHeight: 1.45, fontWeight: 600 }}>
-                      {getPreferredContent(block.item, locale, "title") || "暂无标题"}
-                    </div>
-                    {block.item.url ? (
-                      <a href={block.item.url} target="_blank" rel="noreferrer" className="nm-link-inline">
-                        打开原文
-                      </a>
-                    ) : null}
-                  </Card>
-                ),
-              )}
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "center", paddingTop: 4 }}>
-              <Button variant="ghost" onClick={() => void load(true)} disabled={loadingMore || !hasMoreTimeline}>
-                {loadingMore ? "加载中..." : hasMoreTimeline ? "加载更多" : "没有更多了"}
+            <div className="today-drawer-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Button variant="primary" onClick={() => router.push("/reports")}>
+                生成简报段落
+              </Button>
+              <Button variant="ghost" onClick={() => router.push(signalSearchUrl(selectedSignal))}>
+                追踪这个主题
+              </Button>
+              <Button variant="ghost" onClick={() => router.push("/all")}>
+                查看完整文章流
               </Button>
             </div>
-          </section>
-        </>
-      )}
-
-      <Drawer open={siblingsOpen} onClose={() => setSiblingsOpen(false)} title={siblingsTitle} width={560}>
-        {siblingsLoading ? (
-          <div style={{ display: "grid", gap: 10 }}>
-            {Array.from({ length: 4 }).map((_, index) => (
-              <Skeleton key={index} style={{ width: "100%", height: 84, borderRadius: 10 }} />
-            ))}
-          </div>
-        ) : siblingsRows.length > 0 ? (
-          <div style={{ display: "grid", gap: 10 }}>
-            {siblingsRows.map((row) => (
-              <Card key={row.itemId} style={{ padding: 14, display: "grid", gap: 10 }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <SourceAvatar
-                    source={{
-                      kind: row.platform,
-                      name: row.sourceName,
-                      config: row.sourceConfig as Record<string, unknown> | null,
-                    }}
-                    size={32}
-                  />
-                  <div>
-                    <div style={{ color: "var(--fg-0)", fontWeight: 600 }}>{row.sourceName}</div>
-                    <div className="nm-muted" style={{ fontSize: 12 }}>
-                      同一事件的其他报道来源
-                    </div>
-                  </div>
-                </div>
-                <div style={{ color: "var(--fg-0)", lineHeight: 1.5 }}>
-                  {locale === "zh-CN" ? row.titleZh || row.title || "暂无标题" : row.title || row.titleZh || "暂无标题"}
-                </div>
-                {row.url ? (
-                  <a href={row.url} target="_blank" rel="noreferrer" className="nm-link-inline">
-                    打开原文
-                  </a>
-                ) : null}
-              </Card>
-            ))}
+            <p className="nm-muted" style={{ margin: 0, fontSize: 12, lineHeight: 1.6 }}>
+              代表来源用于快速判断这个信号是否值得写入简报；完整文章流会保留所有抓取到的相关内容。
+            </p>
           </div>
         ) : (
-          <div className="nm-muted">这个事件目前没有更多可展示的其他来源。</div>
+          <div className="nm-muted">请选择一个信号查看详情。</div>
         )}
       </Drawer>
     </div>
@@ -859,4 +550,3 @@ export default function DashboardHomePage() {
     </Suspense>
   );
 }
-

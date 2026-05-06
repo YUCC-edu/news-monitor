@@ -44,6 +44,28 @@ function stringOption(args: string[], name: string) {
   return raw == null ? undefined : raw;
 }
 
+function repeatedOption(args: string[], name: string) {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === name && args[i + 1]) values.push(args[i + 1]);
+  }
+  return values;
+}
+
+function imageReturnOptions(args: string[]) {
+  return repeatedOption(args, "--image").map((raw) => {
+    const sep = raw.indexOf("=");
+    if (sep <= 0) throw new Error("--image must use slot=pathOrUrl");
+    const slotId = raw.slice(0, sep).trim();
+    const value = raw.slice(sep + 1).trim();
+    if (!slotId || !value) throw new Error("--image must use slot=pathOrUrl");
+    if (value.startsWith("http://") || value.startsWith("https://")) {
+      return { slotId, url: value };
+    }
+    return { slotId, localPath: value };
+  });
+}
+
 function printJson(value: unknown) {
   console.log(JSON.stringify(value, null, 2));
 }
@@ -184,6 +206,7 @@ function capabilityUsage() {
   console.log("  nm items search <query> [--limit <n>] [--range <24h|72h|7d|30d|90d>] [--json]");
   console.log("  nm stats overview [--range <7d|30d|90d>] [--min-sources <n>] [--compare] [--json]");
   console.log("  nm reports agent-brief [--range <24h|72h|7d|30d|90d>] [--top-n <n>] [--json]");
+  console.log("  nm reports wechat-draft --intent <text> [--topic <text>] [--mode prepare|complete] [--report-id <uuid>] [--image-provider agent-image2|http-api|none] [--image slot=pathOrUrl] [--json]");
   console.log("  nm queue status [--json]");
   console.log("  nm ai status [--json]");
   console.log("  nm ops reenrich --scope <source|window|item> [scope flags] [--json]");
@@ -478,6 +501,26 @@ async function main() {
         minSources: numberOption(args, "--min-sources") ?? 1,
         reportDate: stringOption(args, "--report-date"),
         timezone: stringOption(args, "--timezone") ?? "Asia/Shanghai",
+      },
+      flags,
+    );
+    return;
+  }
+  if (group === "reports" && command === "wechat-draft") {
+    await runCapability(
+      "wechatDraft.create",
+      {
+        intent: stringOption(args, "--intent") ?? "最近热点内容",
+        topic: stringOption(args, "--topic"),
+        audience: stringOption(args, "--audience") ?? "personal",
+        range: stringOption(args, "--range") ?? "24h",
+        topN: numberOption(args, "--top-n") ?? 10,
+        minSources: numberOption(args, "--min-sources") ?? 1,
+        mode: stringOption(args, "--mode") ?? "prepare",
+        reportId: stringOption(args, "--report-id"),
+        imageProvider: stringOption(args, "--image-provider") ?? "agent-image2",
+        images: imageReturnOptions(args),
+        allowWebSupplement: hasFlag(args, "--allow-web-supplement"),
       },
       flags,
     );

@@ -9,6 +9,7 @@ import { Card } from "@/app/ui/card";
 import { Chip } from "@/app/ui/chip";
 import { Skeleton } from "@/app/ui/skeleton";
 import { SourceAvatar } from "@/app/ui/source-avatar";
+import { buildCategoryInsights } from "@/lib/category-insights";
 import { readJsonResponse } from "@/lib/read-json-response";
 
 type CategoryDimension = "domain" | "topic" | "entity";
@@ -106,35 +107,20 @@ function CategoriesPageInner() {
     };
   }, [load]);
 
-  const valuesByItem = useMemo(() => {
-    const safeItems = Array.isArray(items) ? items : [];
-    return safeItems.map((item) => {
-      if (dimension === "domain") return item.categoryDomain ?? [];
-      if (dimension === "topic") return item.categoryTopic ?? [];
-      return item.categoryEntity ?? [];
-    });
-  }, [dimension, items]);
+  const insights = useMemo(() => buildCategoryInsights(items), [items]);
 
-  const countByTag = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const arr of valuesByItem) {
-      for (const val of arr) {
-        m.set(val, (m.get(val) ?? 0) + 1);
-      }
-    }
-    return m;
-  }, [valuesByItem]);
+  const chipRows = insights.byDimension[dimension];
+  const chipTags = useMemo(() => chipRows.map((row) => row.value), [chipRows]);
+  const rowByTag = useMemo(() => new Map(chipRows.map((row) => [row.value, row])), [chipRows]);
 
-  const chipTags = useMemo(() => {
-    return Array.from(countByTag.keys()).sort((a, b) => (countByTag.get(b) ?? 0) - (countByTag.get(a) ?? 0));
-  }, [countByTag]);
-
-  const visibleChipTags = useMemo(() => {
-    if (showAllTags) return chipTags;
-    const top = chipTags.slice(0, 12);
-    const keep = selected.filter((x) => chipTags.includes(x));
+  const visibleChipRows = useMemo(() => {
+    if (showAllTags) return chipRows;
+    const top = chipRows.slice(0, 12);
+    const keep = selected
+      .map((tag) => rowByTag.get(tag))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
     return [...new Set([...keep, ...top])];
-  }, [chipTags, selected, showAllTags]);
+  }, [chipRows, rowByTag, selected, showAllTags]);
 
   const filteredItems = useMemo(() => {
     if (selected.length === 0) return items;
@@ -149,6 +135,14 @@ function CategoriesPageInner() {
       return selected.some((v) => values.includes(v));
     });
   }, [dimension, items, matchMode, selected]);
+
+  const emptyMessage = useMemo(() => {
+    if (loading) return "";
+    if (items.length === 0) return "暂无内容。请先导入推荐信源或触发抓取，分类页会在内容入库后自动展示。";
+    if (insights.classifiedItems === 0) return "已有内容，但还没有分类结果。请触发重新富化，或等待 worker 完成分类。";
+    if (selected.length > 0 && filteredItems.length === 0) return "当前标签组合下暂无内容，可清空筛选或切换为“任一满足”。";
+    return "暂无内容";
+  }, [filteredItems.length, insights.classifiedItems, items.length, loading, selected.length]);
 
   function toggle(tag: string) {
     setSelected((prev) =>
@@ -229,6 +223,25 @@ function CategoriesPageInner() {
         )}
       </header>
 
+      <div style={summaryGrid}>
+        <Card style={summaryCardStyle}>
+          <span className="nm-muted">覆盖条目</span>
+          <strong>{insights.totalItems}</strong>
+        </Card>
+        <Card style={summaryCardStyle}>
+          <span className="nm-muted">有分类条目</span>
+          <strong>{insights.classifiedItems}</strong>
+        </Card>
+        <Card style={summaryCardStyle}>
+          <span className="nm-muted">待分类条目</span>
+          <strong>{insights.unclassifiedItems}</strong>
+        </Card>
+        <Card style={summaryCardStyle}>
+          <span className="nm-muted">可选题候选</span>
+          <strong>{insights.candidateCount}</strong>
+        </Card>
+      </div>
+
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <Button variant={dimension === "domain" ? "primary" : "ghost"} size="sm" onClick={() => changeDimension("domain")}>
@@ -248,18 +261,19 @@ function CategoriesPageInner() {
           </Button>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {visibleChipTags.map((tag) => {
+          {visibleChipRows.map((row) => {
+            const tag = row.value;
             const active = selected.includes(tag);
-            const count = countByTag.get(tag) ?? 0;
             return (
               <Chip
                 key={tag}
                 active={active}
                 onClick={() => toggle(tag)}
-                style={{ opacity: count === 0 && !active ? 0.45 : 1 }}
+                style={{ opacity: row.itemCount === 0 && !active ? 0.45 : 1 }}
               >
                 {tag}
-                <span style={{ marginLeft: 6, color: "var(--fg-2)" }}>{count}</span>
+                <span style={{ marginLeft: 6, color: "var(--fg-2)" }}>{row.itemCount}</span>
+                <span style={{ marginLeft: 4, color: "var(--fg-3)" }}>{row.sourceCount} 源</span>
               </Chip>
             );
           })}
@@ -300,7 +314,19 @@ function CategoriesPageInner() {
           </>
         ) : filteredItems.length === 0 ? (
           <div className="nm-empty-state">
-            {selected.length > 0 ? "当前标签组合下暂无内容" : "暂无内容"}
+            <div>{emptyMessage}</div>
+            <div style={{ marginTop: 10, display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+              {selected.length > 0 ? (
+                <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
+                  清空筛选
+                </Button>
+              ) : null}
+              {items.length === 0 || insights.classifiedItems === 0 ? (
+                <Button variant="ghost" size="sm" onClick={() => void load()}>
+                  重新加载
+                </Button>
+              ) : null}
+            </div>
           </div>
         ) : (
           filteredItems.map((item, i) => {
@@ -412,4 +438,17 @@ const tagStyle: CSSProperties = {
   border: "1px solid var(--border-strong)",
   borderRadius: 999,
   padding: "2px 8px",
+};
+
+const summaryGrid: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gap: 10,
+  marginBottom: 16,
+};
+
+const summaryCardStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  minHeight: 74,
 };

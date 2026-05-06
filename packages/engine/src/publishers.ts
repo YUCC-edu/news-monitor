@@ -69,6 +69,16 @@ async function getWechatAccessToken() {
 }
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type WechatDraftArticle = ReturnType<typeof buildWechatDraftArticle>;
+
+export type WechatMaterialUpload = {
+  mediaId: string;
+  url?: string;
+};
+
+export async function getWechatAccessTokenForPublish() {
+  return getWechatAccessToken();
+}
 
 async function getFallbackWechatCoverImageUrl() {
   const samples = await listWritingStyleSamples(20);
@@ -89,12 +99,30 @@ export async function uploadWechatPermanentImageMaterial(input: {
   }
   const contentType = imageResponse.headers.get("content-type") ?? "image/jpeg";
   const bytes = await imageResponse.arrayBuffer();
+  const uploaded = await uploadWechatPermanentImageMaterialBytes({
+    accessToken: input.accessToken,
+    bytes,
+    contentType,
+    fetchImpl: input.fetchImpl,
+  });
+  return uploaded.mediaId;
+}
+
+export async function uploadWechatPermanentImageMaterialBytes(input: {
+  accessToken: string;
+  bytes: ArrayBuffer;
+  contentType: string;
+  filename?: string;
+  fetchImpl?: FetchLike;
+}): Promise<WechatMaterialUpload> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const bytes = input.bytes;
   if (bytes.byteLength === 0) throw new Error("WeChat cover image is empty");
   if (bytes.byteLength > 10 * 1024 * 1024) throw new Error("WeChat cover image is larger than 10MB");
 
   const form = new FormData();
-  const filename = contentType.includes("png") ? "news-monitor-cover.png" : "news-monitor-cover.jpg";
-  form.append("media", new Blob([bytes], { type: contentType }), filename);
+  const filename = input.filename ?? (input.contentType.includes("png") ? "news-monitor-cover.png" : "news-monitor-cover.jpg");
+  form.append("media", new Blob([bytes], { type: input.contentType }), filename);
   const uploadResponse = await fetchImpl(
     `https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=${encodeURIComponent(input.accessToken)}&type=image`,
     { method: "POST", body: form },
@@ -108,7 +136,7 @@ export async function uploadWechatPermanentImageMaterial(input: {
   if (!uploadResponse.ok || !data.media_id) {
     throw new Error(`WeChat material upload failed: ${data.errmsg ?? uploadResponse.statusText}`);
   }
-  return data.media_id;
+  return { mediaId: data.media_id, url: data.url };
 }
 
 export async function resolveWechatThumbMediaId(input: {
@@ -140,7 +168,20 @@ async function publishWechatDraft(report: NonNullable<Awaited<ReturnType<typeof 
     fallbackImageUrl: await getFallbackWechatCoverImageUrl(),
   });
   const article = buildWechatDraftArticle(report);
-  const response = await fetch(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${encodeURIComponent(accessToken)}`, {
+  const draft = await createWechatDraftWithArticle({ accessToken, thumbMediaId, article });
+  return { externalId: draft.media_id, output: draft };
+}
+
+export async function createWechatDraftWithArticle(input: {
+  accessToken?: string;
+  thumbMediaId: string;
+  article: WechatDraftArticle;
+  fetchImpl?: FetchLike;
+}) {
+  const accessToken = input.accessToken ?? await getWechatAccessToken();
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const article = input.article;
+  const response = await fetchImpl(`https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${encodeURIComponent(accessToken)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -150,7 +191,7 @@ async function publishWechatDraft(report: NonNullable<Awaited<ReturnType<typeof 
           author: article.author,
           digest: article.digest,
           content: article.content,
-          thumb_media_id: thumbMediaId,
+          thumb_media_id: input.thumbMediaId,
           show_cover_pic: 0,
           need_open_comment: 0,
           only_fans_can_comment: 0,
@@ -166,7 +207,7 @@ async function publishWechatDraft(report: NonNullable<Awaited<ReturnType<typeof 
   if (!response.ok || !data.media_id) {
     throw new Error(`WeChat draft failed: ${data.errmsg ?? response.statusText}`);
   }
-  return { externalId: data.media_id, output: data };
+  return data;
 }
 
 export function signFeishuWebhook(timestamp: string, secret: string) {

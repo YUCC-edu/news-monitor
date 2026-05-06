@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { filterAndScore } from "../lib/global-search";
+import { DASH_NAV, filterAndScore, navSearchSubtitle, PRODUCT_NAV_SECTIONS } from "../lib/global-search";
 
 test("filterAndScore prioritizes exact and prefix matches", () => {
   const rows = [
@@ -19,4 +19,48 @@ test("filterAndScore returns all rows when query empty", () => {
   const rows = [{ title: "A" }, { title: "B" }];
   const out = filterAndScore(rows, "");
   assert.equal(out.length, 2);
+});
+
+test("product navigation exposes the five approved sections", () => {
+  assert.deepEqual(
+    PRODUCT_NAV_SECTIONS.map((section) => section.id),
+    ["today", "read", "briefs", "sources", "settings"],
+  );
+  assert.deepEqual(
+    PRODUCT_NAV_SECTIONS.map((section) => section.label),
+    ["Today", "Read", "Briefs", "Sources", "Settings"],
+  );
+});
+
+test("command navigation still includes existing feature pages", () => {
+  const hrefs = new Set(DASH_NAV.map((entry) => entry.href));
+  for (const href of [
+    "/",
+    "/all",
+    "/reports",
+    "/sources",
+    "/recommended-sources",
+    "/creators",
+    "/health",
+    "/settings",
+    "/ops",
+  ]) {
+    assert.equal(hrefs.has(href), true, `${href} should remain discoverable`);
+  }
+});
+
+test("command navigation keeps english product labels for localized consumers", () => {
+  assert.equal(DASH_NAV.find((entry) => entry.href === "/all")?.labelEn, "Read");
+  assert.equal(DASH_NAV.find((entry) => entry.href === "/search")?.labelEn, "Search");
+});
+
+test("command navigation can be found by English labels", () => {
+  const navRows = DASH_NAV.map((entry) => ({
+    title: entry.label,
+    subtitle: navSearchSubtitle(entry),
+  }));
+  const searchMatches = filterAndScore(navRows, "Search");
+  const recommendedMatches = filterAndScore(navRows, "Recommended");
+  assert.equal(searchMatches.some((match) => match.row.title === "搜索"), true);
+  assert.equal(recommendedMatches.some((match) => match.row.title === "推荐信源"), true);
 });

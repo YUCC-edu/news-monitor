@@ -2,57 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppearanceSwitcher } from "@/app/ui/appearance-switcher";
 import { AssistantWidget } from "@/app/ui/assistant-widget";
 import { useAppearance } from "@/app/ui/appearance-provider";
 import { cn } from "@/app/ui/cn";
 import { CommandPalette } from "@/app/ui/command-palette";
-import { DASH_NAV } from "@/lib/global-search";
+import { PRODUCT_NAV_SECTIONS } from "@/lib/global-search";
 
-const CRUMB = {
-  "zh-CN": {
-    "/": "总编台",
-    "/categories": "分类",
-    "/favorites": "收藏",
-    "/reports": "日报发布",
-    "/sources": "信源库",
-    "/recommended-sources": "推荐信源",
-    "/creators": "博主订阅",
-    "/health": "信源健康",
-    "/keywords": "关键词",
-    "/ops": "运营",
-    "/settings": "设置",
-  },
-  "en-US": {
-    "/": "News Desk",
-    "/categories": "Categories",
-    "/favorites": "Favorites",
-    "/reports": "Reports",
-    "/sources": "Source Library",
-    "/recommended-sources": "Recommended Sources",
-    "/creators": "Creator Feeds",
-    "/health": "Source Health",
-    "/keywords": "Keywords",
-    "/ops": "Ops",
-    "/settings": "Settings",
-  },
-} as const;
-
-const NAV_LABEL_EN: Record<string, string> = {
-  总编流: "Desk Flow",
-  信源运营: "Source Ops",
-  运营: "Ops",
-  总编台: "News Desk",
-  分类: "Categories",
-  收藏: "Favorites",
-  日报发布: "Reports",
-  信源库: "Source Library",
-  推荐信源: "Recommended Sources",
-  博主订阅: "Creator Feeds",
-  信源健康: "Source Health",
-  关键词: "Keywords",
-  设置: "Settings",
+const SECTION_DESCRIPTION_EN: Record<string, string> = {
+  today: "Editorial Radar and main signal",
+  read: "Feed, search, favorites, and topic review",
+  briefs: "Reports, drafts, and publishing history",
+  sources: "Source library, recommendations, creators, and health",
+  settings: "AI mode, channels, security, and ops",
 };
 
 function BrandMark() {
@@ -104,25 +67,18 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const groups = Array.from(new Set(DASH_NAV.map((entry) => entry.group).filter(Boolean))) as string[];
-  const navLabel = DASH_NAV.find((entry) => entry.href === pathname)?.label;
-  const crumbLabel = CRUMB[locale][pathname as keyof (typeof CRUMB)["zh-CN"]] ?? navLabel ?? "news-monitor";
-
-  const sidebarLead = useMemo(
-    () =>
-      locale === "zh-CN"
-        ? {
-            brand: "News-Monitor",
-            search: "Ctrl/Cmd+K 搜索",
-            menu: "打开导航",
-          }
-        : {
-            brand: "News-Monitor",
-            search: "Ctrl/Cmd+K Search",
-            menu: "Open navigation",
-          },
-    [locale],
+  const activeSection = PRODUCT_NAV_SECTIONS.find(
+    (section) => section.href === pathname || section.children.some((child) => child.href === pathname),
   );
+  const crumbSection = PRODUCT_NAV_SECTIONS.find((section) => section.href === pathname);
+  const crumbChild = PRODUCT_NAV_SECTIONS.flatMap((section) => section.children).find(
+    (entry) => entry.href === pathname,
+  );
+  const crumbLabel =
+    locale === "zh-CN"
+      ? (crumbSection?.labelZh ?? crumbChild?.labelZh ?? "news-monitor")
+      : (crumbSection?.label ?? crumbChild?.label ?? "news-monitor");
+  const searchLabel = locale === "zh-CN" ? "Ctrl/Cmd+K 搜索" : "Ctrl/Cmd+K Search";
 
   return (
     <div className="nm-dash-root">
@@ -146,48 +102,86 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
             <BrandMark />
             <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
               <div style={{ fontWeight: 800, color: "var(--fg-0)", fontSize: 17, letterSpacing: 0 }}>
-                {sidebarLead.brand}
+                News-Monitor
               </div>
             </div>
           </div>
         </div>
 
-        <nav style={{ display: "flex", flexDirection: "column", gap: 18, flex: 1 }}>
-          {groups.map((group) => (
-            <div key={group}>
-              <div
-                style={{
-                  padding: "0 20px 8px",
-                  fontSize: 10,
-                  letterSpacing: 1.8,
-                  color: "var(--fg-3)",
-                  textTransform: "uppercase",
-                }}
-              >
-                {locale === "zh-CN" ? group : NAV_LABEL_EN[group] ?? group}
-              </div>
-              {DASH_NAV.filter((entry) => entry.group === group).map((entry) => {
-                const active = pathname === entry.href;
-                return (
-                  <Link
-                    key={entry.href}
-                    href={entry.href}
-                    className={cn("nm-nav-link", active && "nm-nav-link--active")}
+        <nav
+          className="nm-product-nav"
+          aria-label="Product navigation"
+          style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, padding: "0 12px" }}
+        >
+          {PRODUCT_NAV_SECTIONS.map((section) => {
+            const active = activeSection?.id === section.id;
+            const sectionLabel = locale === "zh-CN" ? section.labelZh : section.label;
+            const sectionDetail =
+              locale === "zh-CN" ? section.description : (SECTION_DESCRIPTION_EN[section.id] ?? section.description);
+            return (
+              <div key={section.id} className="nm-product-nav__section" style={{ display: "grid", gap: 4 }}>
+                <Link
+                  href={section.href}
+                  className={cn("nm-product-nav__primary", active && "nm-product-nav__primary--active")}
+                  style={{
+                    display: "grid",
+                    gap: 3,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: "1px solid",
+                    borderColor: active ? "var(--border-strong)" : "transparent",
+                    background: active ? "color-mix(in srgb, var(--fg-0) 7%, transparent)" : "transparent",
+                    color: active ? "var(--fg-0)" : "var(--fg-2)",
+                    textDecoration: "none",
+                    transition: "color 120ms ease, border-color 120ms ease, background 120ms ease",
+                  }}
+                >
+                  <span style={{ fontSize: 14, fontWeight: active ? 700 : 650, letterSpacing: 0 }}>{sectionLabel}</span>
+                  <small style={{ color: active ? "var(--fg-1)" : "var(--fg-3)", fontSize: 11, lineHeight: 1.35 }}>
+                    {sectionDetail}
+                  </small>
+                </Link>
+                {section.children.length > 0 ? (
+                  <div
+                    className="nm-product-nav__children"
                     style={{
-                      display: "block",
-                      padding: "9px 20px",
-                      color: active ? "var(--fg-0)" : "var(--fg-2)",
-                      borderLeft: active ? "2px solid var(--fg-0)" : "2px solid transparent",
-                      background: active ? "rgba(255,255,255,0.03)" : "transparent",
-                      transition: "color 120ms ease, border-color 120ms ease, background 120ms ease",
+                      display: "grid",
+                      gap: 2,
+                      marginLeft: 12,
+                      paddingLeft: 10,
+                      borderLeft: "1px solid var(--border)",
                     }}
                   >
-                    {locale === "zh-CN" ? entry.label : NAV_LABEL_EN[entry.label] ?? entry.label}
-                  </Link>
-                );
-              })}
-            </div>
-          ))}
+                    {section.children.map((child) => {
+                      const childActive = pathname === child.href;
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          className={cn("nm-product-nav__child", childActive && "nm-product-nav__child--active")}
+                          style={{
+                            display: "block",
+                            padding: "7px 10px",
+                            borderRadius: 7,
+                            background: childActive
+                              ? "color-mix(in srgb, var(--fg-0) 8%, transparent)"
+                              : "transparent",
+                            color: childActive ? "var(--fg-0)" : "var(--fg-2)",
+                            fontSize: 13,
+                            fontWeight: childActive ? 650 : 500,
+                            textDecoration: "none",
+                            transition: "color 120ms ease, background 120ms ease",
+                          }}
+                        >
+                          {locale === "zh-CN" ? child.labelZh : child.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </nav>
       </aside>
 
@@ -224,7 +218,7 @@ export default function DashLayout({ children }: { children: React.ReactNode }) 
                 cursor: "pointer",
               }}
             >
-              {sidebarLead.search}
+              {searchLabel}
             </button>
           </div>
         </header>
