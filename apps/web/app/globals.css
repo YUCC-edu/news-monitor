@@ -668,7 +668,7 @@ textarea {
 .nm-today-judgment,
 .today-page-header {
   display: flex;
-  align-items: start;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
